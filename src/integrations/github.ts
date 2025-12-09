@@ -14,7 +14,8 @@ import {
 import { computeVibeScore, VibeScoreResult } from "../analysis/scoring";
 import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../config/loader";
 import { extractFileStructure } from "../analysis/structure";
-import { SECRET_PATTERNS } from "../analysis/patterns";
+import { SECRET_PATTERNS, CODE_EXTENSIONS } from "../analysis/patterns";
+import { canAnalyzeWithAST } from "../analysis/ast";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",
@@ -569,8 +570,31 @@ export function registerEventHandlers(): void {
         patch: f.patch,
       }));
 
-      console.log(`[GitHub App] Analyzing ${prFiles.length} file(s)...`);
-      const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, { config: vibescanConfig });
+      // Fetch file contents for AST analysis (parallel fetch for efficiency)
+      console.log(`[GitHub App] Fetching file contents for AST analysis...`);
+      const fileContents = new Map<string, string>();
+      const astCandidates = prFiles.filter(
+        (f) => f.patch && canAnalyzeWithAST(f.filename) && !vibescanConfig.isFileIgnored(f.filename)
+      );
+
+      if (astCandidates.length > 0) {
+        const fetchPromises = astCandidates.map(async (f) => {
+          const content = await fetchFileContent(octokit, owner, repo, f.filename, headSha);
+          if (content) {
+            fileContents.set(f.filename, content);
+          }
+        });
+        await Promise.all(fetchPromises);
+        console.log(
+          `[GitHub App] Fetched ${fileContents.size}/${astCandidates.length} file(s) for AST analysis`
+        );
+      }
+
+      console.log(`[GitHub App] Analyzing ${prFiles.length} file(s) (${fileContents.size} with AST)...`);
+      const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, {
+        config: vibescanConfig,
+        fileContents,
+      });
 
       // Compute static stats
       const totalFindings = staticFindings.length;

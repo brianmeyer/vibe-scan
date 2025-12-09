@@ -37,6 +37,13 @@ import {
   isSuppressed,
   SuppressionDirective,
 } from "../config/suppression";
+import {
+  analyzeWithAST,
+  canAnalyzeWithAST,
+  convertASTFindingsToFindings,
+  parseChangedLinesFromPatch,
+  mergeFindings,
+} from "./ast";
 
 // Import patterns
 import {
@@ -655,6 +662,11 @@ export interface AnalysisOptions {
    * The loaded configuration. If not provided, uses defaults.
    */
   config?: LoadedConfig;
+  /**
+   * Optional map of file paths to their full content.
+   * When provided, enables hybrid AST + regex analysis for supported languages.
+   */
+  fileContents?: Map<string, string>;
 }
 
 /**
@@ -666,9 +678,10 @@ export interface AnalysisOptions {
  * - Rule enable/disable settings
  * - Per-path rule overrides
  * - Inline suppression directives
+ * - Hybrid AST + regex analysis (when fileContents provided)
  *
  * @param files - Array of files with filename and patch content
- * @param options - Analysis options including config
+ * @param options - Analysis options including config and optional file contents
  * @returns Array of findings that passed config and suppression filters
  */
 export function analyzePullRequestPatchesWithConfig(
@@ -676,6 +689,7 @@ export function analyzePullRequestPatchesWithConfig(
   options: AnalysisOptions = {}
 ): Finding[] {
   const config = options.config ?? createDefaultConfig();
+  const fileContents = options.fileContents;
   const allFindings: Finding[] = [];
 
   for (const file of files) {
@@ -694,8 +708,34 @@ export function analyzePullRequestPatchesWithConfig(
       continue;
     }
 
-    // Get raw findings from the analyzer
-    const rawFindings = analyzePatch(file.filename, file.patch);
+    // Get raw findings - use hybrid analysis when file content is available
+    let rawFindings: Finding[];
+    const content = fileContents?.get(file.filename);
+
+    if (content && canAnalyzeWithAST(file.filename)) {
+      // Hybrid AST + regex analysis
+      const changedLines = parseChangedLinesFromPatch(file.patch);
+      const astResult = analyzeWithAST(content, file.filename, { changedLines });
+
+      if (astResult && astResult.parseSuccess) {
+        // AST analysis succeeded - merge with regex findings
+        const astFindings = convertASTFindingsToFindings(astResult.findings, file.filename);
+        const regexFindings = analyzePatch(file.filename, file.patch);
+        rawFindings = mergeFindings(astFindings, regexFindings);
+        console.log(
+          `[Analyzer] Hybrid analysis for ${file.filename}: ${astFindings.length} AST + ${regexFindings.length} regex -> ${rawFindings.length} merged`
+        );
+      } else {
+        // AST parsing failed - fall back to regex
+        rawFindings = analyzePatch(file.filename, file.patch);
+        console.log(
+          `[Analyzer] AST parse failed for ${file.filename}, using regex only: ${rawFindings.length} findings`
+        );
+      }
+    } else {
+      // No content or unsupported language - regex only
+      rawFindings = analyzePatch(file.filename, file.patch);
+    }
 
     // Parse suppression directives from the patch content
     // Note: We extract added lines from the patch for suppression parsing
