@@ -125,6 +125,7 @@ function createOpenAIClient(): OpenAI | null {
 /**
  * Build the prompt for production risk analysis.
  * Includes static findings as context for the LLM to reason about.
+ * Supports tiered analysis with optional file structure and full content.
  */
 export function buildVibePrompt(params: {
   file: string;
@@ -132,8 +133,12 @@ export function buildVibePrompt(params: {
   snippet: string;
   diffContext?: string;
   staticFindings?: StaticFindingSummary[];
+  /** Optional structural summary of the file (imports, definitions, stats) */
+  fileStructure?: string;
+  /** Optional full file content for deep analysis */
+  fullContent?: string;
 }): string {
-  const { file, language, snippet, diffContext, staticFindings } = params;
+  const { file, language, snippet, diffContext, staticFindings, fileStructure, fullContent } = params;
 
   const languageHint = language ? ` (${language})` : "";
   const diffSection = diffContext
@@ -158,8 +163,46 @@ Use these as primary evidence of potential problems. Cluster related findings in
 `;
   }
 
+  // Build file structure context section if provided
+  let fileStructureSection = "";
+  if (fileStructure) {
+    fileStructureSection = `
+### File Dependency & Structure Context
+
+Use this structural summary to understand the file's dependencies, exports, and overall organization. This helps identify potential issues with external dependencies, missing error handling for imports, and architectural concerns.
+
+${fileStructure}
+
+`;
+  }
+
+  // Build full content section if provided (takes precedence over snippet for analysis)
+  let codeSection = "";
+  if (fullContent) {
+    codeSection = `
+### Full File Context
+
+Use this complete file content to verify deep logical issues like race conditions, unhandled errors across function boundaries, and cross-cutting concerns. The snippet below shows only the changed lines.
+
+Full file content:
+\`\`\`
+${fullContent}
+\`\`\`
+
+Changed lines (snippet):
+\`\`\`
+${snippet}
+\`\`\`${diffSection}`;
+  } else {
+    codeSection = `
+Code snippet:
+\`\`\`
+${snippet}
+\`\`\`${diffSection}`;
+  }
+
   return `You are a senior production engineer analyzing backend code for production risks in a startup environment.
-${staticFindingsSection}
+${fileStructureSection}${staticFindingsSection}
 Your task is to identify issues and classify them into the following production risk categories:
 
 **SCALING_RISK**: Problems that will cause performance or cost issues as traffic grows.
@@ -205,11 +248,7 @@ Your task is to identify issues and classify them into the following production 
 - No fallbacks for degraded dependencies
 
 Analyze this code from file: ${file}${languageHint}
-
-Code snippet:
-\`\`\`
-${snippet}
-\`\`\`${diffSection}
+${codeSection}
 
 Respond ONLY with a JSON object matching this exact TypeScript interface (no markdown, no extra text):
 
@@ -261,6 +300,10 @@ export async function analyzeSnippetWithLlm(params: {
   diffContext?: string;
   modelName?: string;
   staticFindings?: StaticFindingSummary[];
+  /** Optional structural summary of the file (imports, definitions, stats) */
+  fileStructure?: string;
+  /** Optional full file content for deep analysis */
+  fullContent?: string;
 }): Promise<LlmAnalysisResult | null> {
   // Check if API key is configured
   if (!config.GROQ_API_KEY) {
@@ -281,6 +324,8 @@ export async function analyzeSnippetWithLlm(params: {
     snippet: params.snippet,
     diffContext: params.diffContext,
     staticFindings: params.staticFindings,
+    fileStructure: params.fileStructure,
+    fullContent: params.fullContent,
   });
 
   try {
