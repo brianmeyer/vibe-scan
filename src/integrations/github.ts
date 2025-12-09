@@ -1,8 +1,8 @@
 import { Webhooks } from "@octokit/webhooks";
 import { Octokit } from "octokit";
 import { createAppAuth } from "@octokit/auth-app";
-import { config } from "./config";
-import { analyzePullRequestPatchesWithConfig, Finding } from "./analyzer";
+import { config } from "../env";
+import { analyzePullRequestPatchesWithConfig, Finding } from "../analysis/analyzer";
 import {
   analyzeSnippetWithLlm,
   LlmAnalysisResult,
@@ -11,8 +11,8 @@ import {
   groupIssuesByKind,
   StaticFindingSummary,
 } from "./llm";
-import { computeVibeScore, VibeScoreResult } from "./scoring";
-import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "./config/loadConfig";
+import { computeVibeScore, VibeScoreResult } from "../analysis/scoring";
+import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../config/loader";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",

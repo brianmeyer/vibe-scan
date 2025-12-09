@@ -1,22 +1,32 @@
 {
   "name": "vibe-scan",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "GitHub App that analyzes pull requests for production risks in AI-generated or prototype code",
+  "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node src/server.ts",
+    "dev": "ts-node src/index.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node dist/index.js",
+    "test": "jest"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/brianmeyer/vibe-scan.git"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "github-app",
+    "code-review",
+    "static-analysis",
+    "production-readiness",
+    "ai-code",
+    "llm"
+  ],
+  "author": "Brian Meyer",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "bugs": {
     "url": "https://github.com/brianmeyer/vibe-scan/issues"
   },
@@ -24,7 +34,10 @@
   "devDependencies": {
     "@types/body-parser": "^1.19.6",
     "@types/express": "^5.0.6",
+    "@types/jest": "^29.5.14",
     "@types/node": "^24.10.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },

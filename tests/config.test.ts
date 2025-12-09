@@ -3,9 +3,9 @@
  */
 
 import * as path from "path";
-import { loadConfig, loadConfigFromString, createDefaultConfig } from "../src/config/loadConfig";
-import { parseSuppressionDirectives, isSuppressed } from "../src/core/suppression";
-import { DEFAULT_RULE_CONFIG } from "../src/core/rules";
+import { loadConfig, loadConfigFromString, createDefaultConfig } from "../src/config/loader";
+import { parseSuppressionDirectives, isSuppressed } from "../src/config/suppression";
+import { DEFAULT_RULE_CONFIG } from "../src/analysis/rules";
 
 const FIXTURES_DIR = path.join(__dirname, "fixtures/vibescan-config");
 
@@ -246,7 +246,7 @@ const items = await db.findMany();`;
 
 describe("Scoring with Config", () => {
   // Import scoring separately to avoid circular dependency issues
-  const { computeVibeScore, LEVEL_WEIGHT } = require("../src/scoring");
+  const { computeVibeScore, LEVEL_WEIGHT } = require("../src/analysis/scoring");
 
   it("should apply level weights to scoring", () => {
     const errorFinding = {
