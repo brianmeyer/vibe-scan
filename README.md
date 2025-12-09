@@ -138,17 +138,21 @@ npm run start
 
 ```
 src/
-├── server.ts          # Express webhook server
-├── github.ts          # GitHub API integration
-├── analyzer.ts        # Static analysis engine
-├── llm.ts             # LLM integration (Groq)
-├── scoring.ts         # Vibe Score computation
-├── config/            # Configuration loading
-│   ├── schema.ts
-│   └── loadConfig.ts
-└── core/              # Core types and utilities
-    ├── rules.ts
-    └── suppression.ts
+├── index.ts              # Express webhook server entry point
+├── env.ts                # Environment variable configuration
+├── analysis/             # Static analysis modules
+│   ├── analyzer.ts       # Main analysis orchestration
+│   ├── patterns.ts       # Detection pattern constants
+│   ├── helpers.ts        # Analysis helper functions
+│   ├── rules.ts          # Rule definitions and types
+│   └── scoring.ts        # Vibe Score computation
+├── config/               # Configuration system
+│   ├── schema.ts         # Config type definitions
+│   ├── loader.ts         # .vibescan.yml loading
+│   └── suppression.ts    # Inline suppression parsing
+└── integrations/         # External service integrations
+    ├── github.ts         # GitHub App webhook handlers
+    └── llm.ts            # LLM integration (Groq)
 ```
 
 ## License

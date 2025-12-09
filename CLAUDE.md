@@ -19,28 +19,31 @@ npm test         # Run tests (requires Jest setup)
 
 ```
 src/
-├── server.ts              # Express server entry point
-├── config.ts              # Environment variable config
-├── config/
-│   ├── schema.ts          # VibeScanConfig type definitions
-│   └── loadConfig.ts      # .vibescan.yml loader
-├── core/
+├── index.ts               # Express server entry point
+├── env.ts                 # Environment variable config
+├── analysis/              # Static analysis modules
+│   ├── analyzer.ts        # Main analysis orchestration
+│   ├── patterns.ts        # Detection pattern constants
+│   ├── helpers.ts         # Analysis helper functions
 │   ├── rules.ts           # RuleId types, default configs
+│   └── scoring.ts         # Vibe Score computation
+├── config/                # Configuration system
+│   ├── schema.ts          # VibeScanConfig type definitions
+│   ├── loader.ts          # .vibescan.yml loader
 │   └── suppression.ts     # Inline suppression directives
-├── analyzer.ts            # Static analysis (1300+ lines - needs splitting)
-├── llm.ts                 # Groq/OpenAI LLM integration
-├── scoring.ts             # Vibe Score computation
-└── github.ts              # GitHub webhook handlers, PR check runs
+└── integrations/          # External service integrations
+    ├── github.ts          # GitHub webhook handlers, PR check runs
+    └── llm.ts             # Groq/OpenAI LLM integration
 ```
 
 ## Key Concepts
 
-### Static Analysis Rules (src/core/rules.ts)
+### Static Analysis Rules (src/analysis/rules.ts)
 - `RuleId`: Union of all rule identifiers (e.g., `UNBOUNDED_QUERY`, `UNSAFE_IO`)
 - `RuleLevel`: `"error" | "warning" | "info" | "off"`
 - Rules are categorized: scaling, concurrency, error handling, data integrity, code quality
 
-### LLM Analysis (src/llm.ts)
+### LLM Analysis (src/integrations/llm.ts)
 - Uses Groq API (OpenAI-compatible) with llama-3.1-8b-instant
 - 6 issue kinds: `SCALING_RISK`, `CONCURRENCY_RISK`, `ENVIRONMENT_ASSUMPTION`, `DATA_CONTRACT_RISK`, `OBSERVABILITY_GAP`, `RESILIENCE_GAP`
 - LLM is **advisory only** - does NOT affect the Vibe Score
@@ -50,14 +53,14 @@ src/
 - Supports per-path rule overrides
 - Prototype zones (relaxed rules for experimental code)
 
-### Suppression Directives (src/core/suppression.ts)
+### Suppression Directives (src/config/suppression.ts)
 ```typescript
 // vibescan-ignore-file ALL
 // vibescan-ignore-line RULE_ID
 // vibescan-ignore-next-line RULE_ID,ANOTHER_RULE
 ```
 
-### Vibe Score (src/scoring.ts)
+### Vibe Score (src/analysis/scoring.ts)
 - 0-100 score based on static findings only
 - Scaling/concurrency issues have higher penalties
 - Rule level (error/warning/info) applies weight multiplier
@@ -75,13 +78,14 @@ Required for LLM:
 ## Common Tasks
 
 ### Adding a New Static Rule
-1. Add the rule ID to `RuleId` type in `src/core/rules.ts`
+1. Add the rule ID to `RuleId` type in `src/analysis/rules.ts`
 2. Add default config in `DEFAULT_RULE_CONFIG`
-3. Add detection logic in `src/analyzer.ts`
-4. Categorize in `RULE_CATEGORIES` if applicable
+3. Add detection patterns in `src/analysis/patterns.ts`
+4. Add detection logic in `src/analysis/analyzer.ts`
+5. Categorize in `RULE_CATEGORIES` if applicable
 
 ### Modifying LLM Prompt
-- Edit `buildVibePrompt()` in `src/llm.ts`
+- Edit `buildVibePrompt()` in `src/integrations/llm.ts`
 - The 6 issue kinds are documented in the prompt
 
 ### Testing Config Loading

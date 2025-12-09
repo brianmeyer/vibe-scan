@@ -15,7 +15,7 @@ import {
   RuleConfig,
   RuleId,
   isValidRuleId,
-} from "../core/rules";
+} from "../analysis/rules";
 import {
   VibeScanConfig,
   RequiredScoringConfig,

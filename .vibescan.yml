@@ -9,8 +9,8 @@ files:
     - "tests/**"
     - "**/*.test.ts"
     - "**/*.spec.ts"
-    # Ignore the analyzer itself - it contains detection patterns as strings
-    - "src/analyzer.ts"
+    # Ignore the analysis module - it contains detection patterns as strings
+    - "src/analysis/**"
     # Ignore config examples in docs
     - "**/*.md"
 

@@ -16,9 +16,9 @@
  */
 
 import { Finding } from "./analyzer";
-import { LlmIssue } from "./llm";
-import { RuleLevel } from "./core/rules";
-import { RequiredScoringConfig, DEFAULT_SCORING_CONFIG } from "./config/schema";
+import { LlmIssue } from "../integrations/llm";
+import { RuleLevel } from "./rules";
+import { RequiredScoringConfig, DEFAULT_SCORING_CONFIG } from "../config/schema";
 
 export interface VibeScoreResult {
   score: number; // 0–100

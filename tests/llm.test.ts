@@ -12,7 +12,7 @@ import {
   groupIssuesByKind,
   StaticFindingSummary,
   buildVibePrompt,
-} from "../src/llm";
+} from "../src/integrations/llm";
 
 describe("LLM Types", () => {
   describe("LlmIssueKind", () => {

@@ -7,7 +7,7 @@
  * - vibescan-ignore-next-line ALL|RULE_ID[,RULE_ID...]
  */
 
-import { RuleId, isValidRuleId } from "./rules";
+import { RuleId, isValidRuleId } from "../analysis/rules";
 
 /**
  * The scope of a suppression directive.

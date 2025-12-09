@@ -30,13 +30,57 @@
  * - CHECK_THEN_ACT_RACE: find-then-create patterns that can race
  */
 
-import { RuleId, RuleLevel, isValidRuleId } from "./core/rules";
-import { LoadedConfig, createDefaultConfig } from "./config/loadConfig";
+import { RuleId, RuleLevel, isValidRuleId } from "./rules";
+import { LoadedConfig, createDefaultConfig } from "../config/loader";
 import {
   parseSuppressionDirectives,
   isSuppressed,
   SuppressionDirective,
-} from "./core/suppression";
+} from "../config/suppression";
+
+// Import patterns
+import {
+  MAX_FINDINGS_PER_FILE,
+  IO_PATTERNS,
+  DEBUG_PATTERNS,
+  REQUEST_INPUT_PATTERNS,
+  LOOP_PATTERNS,
+  DB_QUERY_PATTERNS,
+  COLLECTION_PROCESSING_PATTERNS,
+  FILE_WRITE_PATTERNS,
+  RETRY_PATTERNS,
+  TIGHT_LOOP_PATTERNS,
+  CHECK_PATTERNS,
+  MEMORY_RISK_PATTERNS,
+} from "./patterns";
+
+// Import helpers
+import {
+  parseHunkHeader,
+  hasErrorHandlingNearby,
+  hasValidationNearby,
+  isInRouteHandlerContext,
+  hasLoopNearby,
+  isInAsyncContext,
+  isSilentCatch,
+  isTopLevelDeclaration,
+  extractVariableName,
+  isVariableMutatedLater,
+  isTestFile,
+  hasPaginationNearby,
+  hasBatchingNearby,
+  isInRequestContext,
+  hasHardcodedFilePath,
+  hasBackoffNearby,
+  hasDelayInLoopBody,
+  hasActPatternNearby,
+  extractCallSignature,
+  hasIOInLoopBody,
+  isCodeFile,
+  collectResponseShapes,
+  areShapesDifferent,
+  extractAddedLinesFromPatch,
+} from "./helpers";
 
 export type Severity = "low" | "medium" | "high";
 
@@ -51,652 +95,6 @@ export interface Finding {
   level?: RuleLevel;
   /** Whether this file is in a prototype zone. */
   isPrototypeZone?: boolean;
-}
-
-// Maximum findings per file to avoid overwhelming output
-const MAX_FINDINGS_PER_FILE = 50;
-
-// Code file extensions we care about
-const CODE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rb", ".java", ".cs"];
-
-// Patterns for I/O operations that should have error handling
-const IO_PATTERNS = [
-  "fetch(",
-  "axios.",
-  "request(",
-  "fs.",
-  "client.query(",
-  "db.",
-  "execute(",
-  "prisma.",
-  "mongoose.",
-  "redis.",
-  "http.",
-  "https.",
-  "net.",
-  "dgram.",
-];
-
-// Patterns that indicate error handling is present
-const ERROR_HANDLING_PATTERNS = ["try", "catch", ".catch("];
-
-// Debug logging patterns
-const DEBUG_PATTERNS = ["console.log", "console.error", "console.warn", "console.debug", "print("];
-
-// Validation library patterns
-const VALIDATION_PATTERNS = [
-  "zod",
-  "yup",
-  "Joi",
-  "joi",
-  "schema",
-  "validate",
-  "class-validator",
-  "io-ts",
-  "ajv",
-  "validator",
-  "sanitize",
-  "parse",
-  "safeParse",
-];
-
-// Request input patterns
-const REQUEST_INPUT_PATTERNS = ["req.body", "req.query", "req.params", "request.body", "request.query", "request.params"];
-
-// Route handler patterns
-const ROUTE_HANDLER_PATTERNS = [
-  "app.get(",
-  "app.post(",
-  "app.put(",
-  "app.patch(",
-  "app.delete(",
-  "router.get(",
-  "router.post(",
-  "router.put(",
-  "router.patch(",
-  "router.delete(",
-  "express.Router",
-];
-
-// Loop patterns
-const LOOP_PATTERNS = ["for (", "for(", "for await (", "for await(", "while (", "while(", ".forEach(", ".map(", ".reduce("];
-
-// Async patterns
-const ASYNC_PATTERNS = ["async function", "async (", "async("];
-
-// ============================================================================
-// Scaling-focused pattern constants
-// ============================================================================
-
-// Database/ORM query patterns that may be unbounded
-const DB_QUERY_PATTERNS = [
-  "SELECT *",
-  "SELECT * FROM",
-  ".findMany(",
-  ".find(",
-  ".findAll(",
-  "Model.find(",
-  "Model.findAll(",
-  ".aggregate(",
-  ".query(",
-  "prisma.",
-  "db.select(",
-  "db.query(",
-  ".collection(",
-  ".getAll(",
-];
-
-// Pagination/limit indicators that suggest bounded queries
-const PAGINATION_PATTERNS = [
-  ".limit(",
-  ".take(",
-  ".skip(",
-  ".offset(",
-  ".page(",
-  ".perPage(",
-  "LIMIT",
-  "OFFSET",
-  "TOP ",
-  "FETCH FIRST",
-  "pageSize",
-  "pagination",
-  ".slice(",
-  ".paginate(",
-];
-
-// Collection processing patterns
-const COLLECTION_PROCESSING_PATTERNS = [
-  ".map(",
-  ".filter(",
-  ".reduce(",
-  ".forEach(",
-  "for (",
-  "for(",
-  "for of",
-  "for await",
-];
-
-// Batching indicators
-const BATCHING_PATTERNS = [
-  "Promise.all(",
-  "Promise.allSettled(",
-  "chunk",
-  "batch",
-  "pageSize",
-  "batchSize",
-  "bulkWrite",
-  "bulkInsert",
-  "insertMany",
-  "createMany",
-  "$transaction",
-];
-
-// Memory-risky patterns (loading entire files/datasets into memory)
-const MEMORY_RISK_PATTERNS = [
-  "fs.readFileSync(",
-  "readFileSync(",
-  ".readFile(",
-  "JSON.parse(fs.",
-  "JSON.parse(readFileSync",
-  ".toString()",
-  "Buffer.from(",
-  ".getObject(",
-  ".download(",
-  "toArray()",
-  ".toArray()",
-];
-
-// External API call patterns for caching detection
-const EXTERNAL_CALL_PATTERNS = [
-  "fetch(",
-  "axios.get(",
-  "axios.post(",
-  "axios(",
-  "http.get(",
-  "https.get(",
-  "request(",
-  "got(",
-  "superagent",
-];
-
-// ============================================================================
-// Concurrency/Contention pattern constants
-// ============================================================================
-
-// File write patterns (for SHARED_FILE_WRITE detection)
-const FILE_WRITE_PATTERNS = [
-  "fs.writeFile(",
-  "fs.writeFileSync(",
-  "fs.appendFile(",
-  "fs.appendFileSync(",
-  "writeFile(",
-  "writeFileSync(",
-  "appendFile(",
-  "appendFileSync(",
-];
-
-// Retry-related patterns
-const RETRY_PATTERNS = [
-  "retry",
-  "retries",
-  "maxRetries",
-  "numRetries",
-  "attempt",
-  "attempts",
-];
-
-// Backoff/jitter patterns that mitigate retry storms
-const BACKOFF_PATTERNS = [
-  "backoff",
-  "exponential",
-  "jitter",
-  "delay *",
-  "setTimeout",
-  "sleep(",
-  "wait(",
-];
-
-// Tight loop patterns (for BUSY_WAIT_OR_TIGHT_LOOP detection)
-const TIGHT_LOOP_PATTERNS = [
-  "while (true)",
-  "while(true)",
-  "for (;;)",
-  "for(;;)",
-  "while (1)",
-  "while(1)",
-];
-
-// Check-then-act patterns (find/get followed by create/insert)
-const CHECK_PATTERNS = [
-  ".findOne(",
-  ".findUnique(",
-  ".findFirst(",
-  ".get(",
-  ".getOne(",
-  "SELECT.*WHERE",
-  ".exists(",
-];
-
-const ACT_PATTERNS = [
-  ".create(",
-  ".insert(",
-  ".insertOne(",
-  "INSERT INTO",
-  ".save(",
-  ".add(",
-];
-
-/**
- * Parse the starting line number from a unified diff hunk header.
- * Format: @@ -a,b +c,d @@ or @@ -a +c @@
- * Returns the starting line number for added lines (c).
- */
-function parseHunkHeader(line: string): number | null {
-  const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-  if (match) {
-    return parseInt(match[1], 10);
-  }
-  return null;
-}
-
-/**
- * Check if a line (within the patch context) suggests error handling nearby.
- * We look at a window of lines around the current position.
- */
-function hasErrorHandlingNearby(patchLines: string[], currentIndex: number, windowSize: number = 5): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-  const end = Math.min(patchLines.length, currentIndex + windowSize + 1);
-
-  for (let i = start; i < end; i++) {
-    const line = patchLines[i];
-    if (line && ERROR_HANDLING_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if validation patterns exist nearby in the patch.
- */
-function hasValidationNearby(patchLines: string[], currentIndex: number, windowSize: number = 8): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-  const end = Math.min(patchLines.length, currentIndex + windowSize + 1);
-
-  for (let i = start; i < end; i++) {
-    const line = patchLines[i];
-    if (line && VALIDATION_PATTERNS.some((pattern) => line.toLowerCase().includes(pattern.toLowerCase()))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if we're in a route handler context nearby.
- */
-function isInRouteHandlerContext(patchLines: string[], currentIndex: number, windowSize: number = 15): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-
-  for (let i = start; i < currentIndex; i++) {
-    const line = patchLines[i];
-    if (line && ROUTE_HANDLER_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if there's a loop nearby (before current line).
- */
-function hasLoopNearby(patchLines: string[], currentIndex: number, windowSize: number = 8): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-
-  for (let i = start; i < currentIndex; i++) {
-    const line = patchLines[i];
-    if (line && LOOP_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if we're in an async function context.
- */
-function isInAsyncContext(patchLines: string[], currentIndex: number, windowSize: number = 20): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-
-  for (let i = start; i < currentIndex; i++) {
-    const line = patchLines[i];
-    if (line && ASYNC_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if a catch block appears to be empty or silent.
- */
-function isSilentCatch(patchLines: string[], catchIndex: number): boolean {
-  // Look for the opening brace after catch
-  let braceDepth = 0;
-  let foundOpenBrace = false;
-  let contentLines: string[] = [];
-
-  for (let i = catchIndex; i < Math.min(patchLines.length, catchIndex + 10); i++) {
-    const line = patchLines[i] || "";
-
-    if (line.includes("{")) {
-      foundOpenBrace = true;
-      braceDepth += (line.match(/{/g) || []).length;
-    }
-    if (line.includes("}")) {
-      braceDepth -= (line.match(/}/g) || []).length;
-    }
-
-    if (foundOpenBrace && i > catchIndex) {
-      contentLines.push(line);
-    }
-
-    if (foundOpenBrace && braceDepth === 0) {
-      break;
-    }
-  }
-
-  // Check if the catch block is effectively empty
-  const contentStr = contentLines.join("\n").replace(/[{}]/g, "").trim();
-
-  // Empty or only whitespace
-  if (!contentStr) return true;
-
-  // Only contains comments
-  if (/^(\/\/.*|\s)*$/.test(contentStr)) return true;
-
-  // Only contains a simple console.log/error with no other action
-  if (/^(\s*console\.(log|error|warn)\([^)]*\);\s*)+$/.test(contentStr)) {
-    // Check if it's just logging without rethrowing or handling
-    if (!contentStr.includes("throw") && !contentStr.includes("return") && !contentStr.includes("reject")) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Check if a line looks like a top-level declaration (no indentation).
- */
-function isTopLevelDeclaration(line: string): boolean {
-  // Must start with + (added line) followed by let, var, or const
-  return /^\+(?:let|var|const)\s+\w+\s*=/.test(line);
-}
-
-/**
- * Extract variable name from a declaration line.
- */
-function extractVariableName(line: string): string | null {
-  const match = line.match(/^\+(?:let|var|const)\s+(\w+)\s*=/);
-  return match ? match[1] : null;
-}
-
-/**
- * Check if a variable is mutated later in the patch.
- */
-function isVariableMutatedLater(patchLines: string[], varName: string, startIndex: number): boolean {
-  for (let i = startIndex + 1; i < patchLines.length; i++) {
-    const line = patchLines[i] || "";
-    if (!line.startsWith("+")) continue;
-
-    // Check for mutations: .push(, [x] =, .prop =
-    const mutationPatterns = [
-      new RegExp(`${varName}\\.push\\(`),
-      new RegExp(`${varName}\\[.+\\]\\s*=`),
-      new RegExp(`${varName}\\.\\w+\\s*=`),
-      new RegExp(`${varName}\\s*=\\s*`), // reassignment (for let/var)
-    ];
-
-    if (mutationPatterns.some((pattern) => pattern.test(line))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if a file is a test file based on its name.
- */
-function isTestFile(filename: string): boolean {
-  return filename.includes(".test.") || filename.includes(".spec.") || filename.includes("__tests__");
-}
-
-// ============================================================================
-// Scaling-focused helper functions
-// ============================================================================
-
-/**
- * Check if pagination/limit indicators exist nearby in the patch.
- */
-function hasPaginationNearby(patchLines: string[], currentIndex: number, windowSize: number = 5): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-  const end = Math.min(patchLines.length, currentIndex + windowSize + 1);
-
-  for (let i = start; i < end; i++) {
-    const line = patchLines[i];
-    if (line && PAGINATION_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if batching indicators exist nearby in the patch.
- */
-function hasBatchingNearby(patchLines: string[], currentIndex: number, windowSize: number = 8): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-  const end = Math.min(patchLines.length, currentIndex + windowSize + 1);
-
-  for (let i = start; i < end; i++) {
-    const line = patchLines[i];
-    if (line && BATCHING_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if we're in a request/handler context (for unbounded collection detection).
- */
-function isInRequestContext(patchLines: string[], currentIndex: number, windowSize: number = 20): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-
-  for (let i = start; i < currentIndex; i++) {
-    const line = patchLines[i];
-    if (!line) continue;
-
-    // Check for route handlers
-    if (ROUTE_HANDLER_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-    // Check for req/res usage
-    if (line.includes("req.") || line.includes("res.") || line.includes("request.") || line.includes("response.")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// ============================================================================
-// Concurrency/Contention helper functions
-// ============================================================================
-
-/**
- * Check if a file write uses a hardcoded string literal path.
- */
-function hasHardcodedFilePath(content: string): boolean {
-  // Look for string literal paths in file write calls
-  // Match patterns like: writeFile("./data.json", ...) or writeFileSync('/tmp/cache.txt', ...)
-  return /(?:writeFile|appendFile)(?:Sync)?\s*\(\s*["'`][^"'`]+["'`]/.test(content);
-}
-
-/**
- * Check if backoff/jitter patterns exist nearby in the patch.
- */
-function hasBackoffNearby(patchLines: string[], currentIndex: number, windowSize: number = 10): boolean {
-  const start = Math.max(0, currentIndex - windowSize);
-  const end = Math.min(patchLines.length, currentIndex + windowSize + 1);
-
-  for (let i = start; i < end; i++) {
-    const line = patchLines[i];
-    if (line && BACKOFF_PATTERNS.some((pattern) => line.toLowerCase().includes(pattern.toLowerCase()))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if there's a delay/sleep/setTimeout nearby (for tight loop detection).
- */
-function hasDelayInLoopBody(patchLines: string[], loopIndex: number, windowSize: number = 10): boolean {
-  const end = Math.min(patchLines.length, loopIndex + windowSize + 1);
-
-  for (let i = loopIndex + 1; i < end; i++) {
-    const line = patchLines[i];
-    if (!line) continue;
-
-    // Check for delay patterns
-    if (/setTimeout|sleep|await\s+delay|await\s+wait|await\s+new\s+Promise/.test(line)) {
-      return true;
-    }
-    // Check for break/return which would exit the loop
-    if (/\breturn\b|\bbreak\b/.test(line)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if an act pattern (create/insert) follows a check pattern (find/get) nearby.
- */
-function hasActPatternNearby(patchLines: string[], checkIndex: number, windowSize: number = 8): boolean {
-  const end = Math.min(patchLines.length, checkIndex + windowSize + 1);
-
-  for (let i = checkIndex + 1; i < end; i++) {
-    const line = patchLines[i];
-    if (!line || !line.startsWith("+")) continue;
-
-    if (ACT_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Extract a normalized "call signature" from a line for caching detection.
- * Returns null if no external call pattern is found.
- */
-function extractCallSignature(content: string): string | null {
-  for (const pattern of EXTERNAL_CALL_PATTERNS) {
-    if (content.includes(pattern)) {
-      // Try to extract the URL or call signature
-      // Match fetch("url") or axios.get("url") etc.
-      const urlMatch = content.match(/["'`]([^"'`]+)["'`]/);
-      if (urlMatch) {
-        return `${pattern}${urlMatch[1]}`;
-      }
-      // If no URL found, use the pattern + a hash of the line
-      return `${pattern}:${content.trim().slice(0, 50)}`;
-    }
-  }
-  return null;
-}
-
-/**
- * Check if there's I/O happening in the next few lines after a loop.
- */
-function hasIOInLoopBody(patchLines: string[], loopIndex: number, windowSize: number = 8): boolean {
-  const end = Math.min(patchLines.length, loopIndex + windowSize + 1);
-
-  for (let i = loopIndex + 1; i < end; i++) {
-    const line = patchLines[i];
-    if (!line || !line.startsWith("+")) continue;
-
-    if (IO_PATTERNS.some((pattern) => line.includes(pattern))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if a file has a code extension we care about.
- */
-function isCodeFile(filename: string): boolean {
-  return CODE_EXTENSIONS.some((ext) => filename.endsWith(ext));
-}
-
-/**
- * Collect response shape patterns from the patch for MIXED_RESPONSE_SHAPES detection.
- */
-function collectResponseShapes(patchLines: string[]): { line: number; shape: string }[] {
-  const shapes: { line: number; shape: string }[] = [];
-  let currentLine = 0;
-
-  for (let i = 0; i < patchLines.length; i++) {
-    const line = patchLines[i] || "";
-
-    const hunkStart = parseHunkHeader(line);
-    if (hunkStart !== null) {
-      currentLine = hunkStart;
-      continue;
-    }
-
-    if (line.startsWith("+")) {
-      // Look for res.json({ or res.send({ or return {
-      const jsonMatch = line.match(/(?:res\.(?:json|send)|return)\s*\(\s*\{([^}]*)\}/);
-      if (jsonMatch) {
-        shapes.push({ line: currentLine, shape: jsonMatch[1].trim() });
-      }
-      currentLine++;
-    } else if (!line.startsWith("-")) {
-      currentLine++;
-    }
-  }
-
-  return shapes;
-}
-
-/**
- * Extract keys from a simple object shape string.
- */
-function extractKeys(shape: string): string[] {
-  // Simple extraction of property names
-  const keys: string[] = [];
-  const matches = shape.matchAll(/(\w+)\s*:/g);
-  for (const match of matches) {
-    keys.push(match[1]);
-  }
-  return keys.sort();
-}
-
-/**
- * Check if two shapes are meaningfully different.
- */
-function areShapesDifferent(shape1: string, shape2: string): boolean {
-  const keys1 = extractKeys(shape1);
-  const keys2 = extractKeys(shape2);
-
-  if (keys1.length === 0 || keys2.length === 0) return false;
-  if (keys1.length !== keys2.length) return true;
-
-  return keys1.some((key, idx) => key !== keys2[idx]);
 }
 
 /**
@@ -860,7 +258,8 @@ export function analyzePatch(file: string, patch: string): Finding[] {
           line: currentLine,
           severity: "medium",
           kind: "DATA_SHAPE_ASSUMPTION",
-          message: "Non-null assertion detected. Code is making strong assumptions about data shape that may not hold in production.",
+          message:
+            "Non-null assertion detected. Code is making strong assumptions about data shape that may not hold in production.",
           snippet: trimmedContent.slice(0, 100),
         });
       }
@@ -993,7 +392,10 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       if (hasCollectionProcessing && isInRequestContext(lines, i)) {
         // Check if it looks like processing a potentially large collection
         // (items, rows, users, messages, data, results, records, etc.)
-        const largeCollectionHint = /\b(items|rows|users|messages|data|results|records|entries|documents|events|logs|orders|products)\b/i.test(content);
+        const largeCollectionHint =
+          /\b(items|rows|users|messages|data|results|records|entries|documents|events|logs|orders|products)\b/i.test(
+            content
+          );
         if (largeCollectionHint) {
           findings.push({
             file,
@@ -1111,8 +513,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
             line: currentLine,
             severity: "high",
             kind: "BUSY_WAIT_OR_TIGHT_LOOP",
-            message:
-              "Tight loop without delay/sleep detected. This can peg CPU at 100% and starve other processes.",
+            message: "Tight loop without delay/sleep detected. This can peg CPU at 100% and starve other processes.",
             snippet: trimmedContent.slice(0, 100),
           });
         }
@@ -1290,9 +691,7 @@ export function analyzePullRequestPatchesWithConfig(
         });
       } else {
         // For non-standard rule kinds, only apply file-scope ALL suppression
-        const hasAllSuppression = suppressions.some(
-          (s) => s.scope === "file" && s.allRules
-        );
+        const hasAllSuppression = suppressions.some((s) => s.scope === "file" && s.allRules);
         if (!hasAllSuppression) {
           allFindings.push({
             ...finding,
@@ -1307,36 +706,8 @@ export function analyzePullRequestPatchesWithConfig(
 }
 
 /**
- * Extract the content of added lines from a unified diff patch.
- * This reconstructs something close to the new file content for suppression parsing.
- *
- * @param patch - The unified diff patch string
- * @returns String containing the added lines (approximation of new content)
- */
-function extractAddedLinesFromPatch(patch: string): string {
-  const lines = patch.split("\n");
-  const addedLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith("+") && !line.startsWith("+++")) {
-      // Remove the leading "+" and add to our content
-      addedLines.push(line.slice(1));
-    } else if (!line.startsWith("-") && !line.startsWith("@@") && !line.startsWith("diff ")) {
-      // Context lines (no prefix) - include them for proper line number tracking
-      addedLines.push(line);
-    }
-  }
-
-  return addedLines.join("\n");
-}
-
-/**
  * Re-export types and functions from core modules for convenience.
  */
-export { RuleId, RuleLevel, isValidRuleId } from "./core/rules";
-export { LoadedConfig, loadConfig, createDefaultConfig } from "./config/loadConfig";
-export {
-  parseSuppressionDirectives,
-  isSuppressed,
-  SuppressionDirective,
-} from "./core/suppression";
+export { RuleId, RuleLevel, isValidRuleId } from "./rules";
+export { LoadedConfig, loadConfig, createDefaultConfig } from "../config/loader";
+export { parseSuppressionDirectives, isSuppressed, SuppressionDirective } from "../config/suppression";

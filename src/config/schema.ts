@@ -5,7 +5,7 @@
  * that can be placed in repository roots to customize Vibe Scan behavior.
  */
 
-import { RuleConfig, RuleId, RuleOverride } from "../core/rules";
+import { RuleConfig, RuleId, RuleOverride } from "../analysis/rules";
 
 /**
  * Scoring configuration options.

@@ -1,7 +1,7 @@
 import express from "express";
 import bodyParser from "body-parser";
-import { config } from "./config";
-import { webhooks, registerEventHandlers } from "./github";
+import { config } from "./env";
+import { webhooks, registerEventHandlers } from "./integrations/github";
 
 const app = express();
 const port = Number(config.PORT) || 3000;
