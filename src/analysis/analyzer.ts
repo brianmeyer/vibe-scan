@@ -52,6 +52,7 @@ import {
   TIGHT_LOOP_PATTERNS,
   CHECK_PATTERNS,
   MEMORY_RISK_PATTERNS,
+  matchesAnyPattern,
 } from "./patterns";
 
 // Import helpers
@@ -191,7 +192,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // b) UNSAFE_IO detection
       // ========================================
-      const hasIOPattern = IO_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasIOPattern = matchesAnyPattern(content, IO_PATTERNS);
       if (hasIOPattern) {
         // Check if there's error handling nearby in the patch
         if (!hasErrorHandlingNearby(lines, i)) {
@@ -214,7 +215,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // c) CONSOLE_DEBUG detection (only for non-test files)
       // ========================================
       if (!isTestFile(file)) {
-        const hasDebugPattern = DEBUG_PATTERNS.some((pattern) => content.includes(pattern));
+        const hasDebugPattern = matchesAnyPattern(content, DEBUG_PATTERNS);
         if (hasDebugPattern) {
           findings.push({
             file,
@@ -231,7 +232,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // d) UNVALIDATED_INPUT detection
       // ========================================
-      const hasRequestInput = REQUEST_INPUT_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasRequestInput = matchesAnyPattern(content, REQUEST_INPUT_PATTERNS);
       if (hasRequestInput) {
         seenRequestInputLines.push(i);
         // Check if we're in a route handler context and no validation nearby
@@ -264,7 +265,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
         });
       }
       // Type assertion on external data: as SomeType (heuristic)
-      if (/as\s+\w+/.test(content) && REQUEST_INPUT_PATTERNS.some((p) => content.includes(p))) {
+      if (/as\s+\w+/.test(content) && matchesAnyPattern(content, REQUEST_INPUT_PATTERNS)) {
         findings.push({
           file,
           line: currentLine,
@@ -299,7 +300,8 @@ export function analyzePatch(file: string, patch: string): Finding[] {
           // Determine severity based on whether I/O is nearby
           const hasIONearby = IO_PATTERNS.some((pattern) => {
             for (let j = Math.max(0, i - 10); j < Math.min(lines.length, i + 10); j++) {
-              if (lines[j]?.includes(pattern)) return true;
+              const line = lines[j];
+              if (line && (typeof pattern === "string" ? line.includes(pattern) : pattern.test(line))) return true;
             }
             return false;
           });
@@ -369,7 +371,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // j) UNBOUNDED_QUERY detection
       // ========================================
-      const hasDbQueryPattern = DB_QUERY_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasDbQueryPattern = matchesAnyPattern(content, DB_QUERY_PATTERNS);
       if (hasDbQueryPattern) {
         // Check if there's pagination/limit nearby
         if (!hasPaginationNearby(lines, i)) {
@@ -388,7 +390,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // k) UNBOUNDED_COLLECTION_PROCESSING detection
       // ========================================
-      const hasCollectionProcessing = COLLECTION_PROCESSING_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasCollectionProcessing = matchesAnyPattern(content, COLLECTION_PROCESSING_PATTERNS);
       if (hasCollectionProcessing && isInRequestContext(lines, i)) {
         // Check if it looks like processing a potentially large collection
         // (items, rows, users, messages, data, results, records, etc.)
@@ -413,7 +415,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // l) MISSING_BATCHING detection
       // ========================================
       // Detect loops that will have I/O without batching
-      const isLoopStart = LOOP_PATTERNS.some((pattern) => content.includes(pattern));
+      const isLoopStart = matchesAnyPattern(content, LOOP_PATTERNS);
       if (isLoopStart) {
         // Check if there's I/O in the loop body and no batching nearby
         if (hasIOInLoopBody(lines, i) && !hasBatchingNearby(lines, i)) {
@@ -445,7 +447,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // n) MEMORY_RISK detection
       // ========================================
-      const hasMemoryRiskPattern = MEMORY_RISK_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasMemoryRiskPattern = matchesAnyPattern(content, MEMORY_RISK_PATTERNS);
       if (hasMemoryRiskPattern) {
         // Check for signs of streaming (which would mitigate the risk)
         const hasStreamingHint = /stream|pipe|chunk|createReadStream/i.test(content);
@@ -469,7 +471,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // o) SHARED_FILE_WRITE detection
       // ========================================
-      const hasFileWritePattern = FILE_WRITE_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasFileWritePattern = matchesAnyPattern(content, FILE_WRITE_PATTERNS);
       if (hasFileWritePattern && hasHardcodedFilePath(content)) {
         findings.push({
           file,
@@ -485,7 +487,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // p) RETRY_STORM_RISK detection
       // ========================================
-      const hasRetryPattern = RETRY_PATTERNS.some((pattern) => content.toLowerCase().includes(pattern.toLowerCase()));
+      const hasRetryPattern = matchesAnyPattern(content.toLowerCase(), RETRY_PATTERNS);
       if (hasRetryPattern && hasIOPattern) {
         // Check if there's backoff/jitter nearby
         if (!hasBackoffNearby(lines, i)) {
@@ -504,7 +506,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // q) BUSY_WAIT_OR_TIGHT_LOOP detection
       // ========================================
-      const hasTightLoopPattern = TIGHT_LOOP_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasTightLoopPattern = matchesAnyPattern(content, TIGHT_LOOP_PATTERNS);
       if (hasTightLoopPattern) {
         // Check if there's a delay inside the loop body
         if (!hasDelayInLoopBody(lines, i)) {
@@ -522,7 +524,7 @@ export function analyzePatch(file: string, patch: string): Finding[] {
       // ========================================
       // r) CHECK_THEN_ACT_RACE detection
       // ========================================
-      const hasCheckPattern = CHECK_PATTERNS.some((pattern) => content.includes(pattern));
+      const hasCheckPattern = matchesAnyPattern(content, CHECK_PATTERNS);
       if (hasCheckPattern) {
         // Look for a create/insert pattern following this check
         if (hasActPatternNearby(lines, i)) {

@@ -12,7 +12,18 @@ import {
   groupIssuesByKind,
   StaticFindingSummary,
   buildVibePrompt,
+  analyzeSnippetWithLlm,
 } from "../src/integrations/llm";
+
+// Mock the OpenAI module
+jest.mock("openai");
+
+// Mock the config module
+jest.mock("../src/env", () => ({
+  config: {
+    GROQ_API_KEY: "test-api-key",
+  },
+}));
 
 describe("LLM Types", () => {
   describe("LlmIssueKind", () => {
@@ -392,5 +403,354 @@ describe("buildVibePrompt", () => {
 
     expect(prompt).toContain("Diff context");
     expect(prompt).toContain("@@ -10,5 +10,7 @@");
+  });
+});
+
+// ============================================================================
+// LLM Failure Handling Tests (Phase 3)
+// ============================================================================
+
+describe("analyzeSnippetWithLlm Error Handling", () => {
+  // Get reference to the mocked OpenAI
+  const OpenAI = require("openai").default;
+  let mockCreate: jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCreate = jest.fn();
+    OpenAI.mockImplementation(() => ({
+      chat: {
+        completions: {
+          create: mockCreate,
+        },
+      },
+    }));
+  });
+
+  describe("API Errors", () => {
+    it("should return null when OpenAI API throws a network error", async () => {
+      mockCreate.mockRejectedValue(new Error("Network error: Connection refused"));
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it("should return null when OpenAI API throws a rate limit error", async () => {
+      const rateLimitError = new Error("Rate limit exceeded");
+      (rateLimitError as any).status = 429;
+      mockCreate.mockRejectedValue(rateLimitError);
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it("should return null when OpenAI API throws a 500 server error", async () => {
+      const serverError = new Error("Internal Server Error");
+      (serverError as any).status = 500;
+      mockCreate.mockRejectedValue(serverError);
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it("should return null when OpenAI API throws a timeout error", async () => {
+      mockCreate.mockRejectedValue(new Error("Request timeout after 30000ms"));
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it("should return null when OpenAI API throws authentication error", async () => {
+      const authError = new Error("Invalid API key");
+      (authError as any).status = 401;
+      mockCreate.mockRejectedValue(authError);
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("Empty/Invalid Responses", () => {
+    it("should return empty issues when response has no content", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: null } }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(0);
+    });
+
+    it("should return empty issues when response has empty string content", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: "" } }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(0);
+    });
+
+    it("should return empty issues when choices array is empty", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(0);
+    });
+  });
+
+  describe("Malformed JSON Responses", () => {
+    it("should return empty issues when response is not valid JSON", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: "This is not JSON at all!" } }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(0);
+    });
+
+    it("should return empty issues when response is truncated JSON", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '{"issues": [{"kind": "SCALING_RISK", "title": "Incomplete' } }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(0);
+    });
+
+    it("should return empty issues when response has wrong structure", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '{"wrongKey": "wrongValue"}' } }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(0);
+    });
+
+    it("should handle issues with invalid severity gracefully", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              issues: [{
+                kind: "SCALING_RISK",
+                title: "Test issue",
+                summary: "Test summary",
+                severity: "invalid_severity", // Invalid severity
+              }],
+            }),
+          },
+        }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(1);
+      // Should default to "medium" for invalid severity
+      expect(result?.issues[0].severity).toBe("medium");
+    });
+
+    it("should handle issues with invalid kind gracefully", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              issues: [{
+                kind: "INVALID_KIND", // Invalid kind
+                title: "Test issue",
+                summary: "Test summary",
+                severity: "high",
+              }],
+            }),
+          },
+        }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(1);
+      // Should default to "SCALING_RISK" for invalid kind
+      expect(result?.issues[0].kind).toBe("SCALING_RISK");
+    });
+
+    it("should extract JSON even when surrounded by extra text", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{
+          message: {
+            content: `Here is my analysis:
+{
+  "issues": [{
+    "kind": "SCALING_RISK",
+    "title": "Unbounded query",
+    "summary": "No limit on query",
+    "severity": "high"
+  }],
+  "architectureSummary": "Test summary"
+}
+I hope this helps!`,
+          },
+        }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(1);
+      expect(result?.issues[0].kind).toBe("SCALING_RISK");
+      expect(result?.architectureSummary).toBe("Test summary");
+    });
+  });
+
+  describe("Successful Responses", () => {
+    it("should parse a valid response correctly", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              issues: [
+                {
+                  kind: "SCALING_RISK",
+                  title: "Unbounded database query",
+                  file: "src/api/users.ts",
+                  line: 10,
+                  summary: "The findMany() call has no limit.",
+                  evidenceSnippet: "await db.users.findMany()",
+                  suggestedFix: "Add pagination with take/skip.",
+                  severity: "high",
+                },
+                {
+                  kind: "OBSERVABILITY_GAP",
+                  title: "Missing error logging",
+                  summary: "No structured logging for errors.",
+                  severity: "medium",
+                },
+              ],
+              architectureSummary: "Code has scaling and observability concerns.",
+            }),
+          },
+        }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const users = await db.users.findMany();",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(2);
+      expect(result?.issues[0].kind).toBe("SCALING_RISK");
+      expect(result?.issues[0].title).toBe("Unbounded database query");
+      expect(result?.issues[0].severity).toBe("high");
+      expect(result?.issues[1].kind).toBe("OBSERVABILITY_GAP");
+      expect(result?.architectureSummary).toBe("Code has scaling and observability concerns.");
+    });
+
+    it("should handle response with empty issues array", async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              issues: [],
+              architectureSummary: null,
+            }),
+          },
+        }],
+      });
+
+      const result = await analyzeSnippetWithLlm({
+        file: "src/api/users.ts",
+        snippet: "const x = 1;",
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.issues).toHaveLength(0);
+      expect(result?.architectureSummary).toBeUndefined();
+    });
+  });
+});
+
+describe("analyzeSnippetWithLlm with Missing API Key", () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  it("should return null when GROQ_API_KEY is not configured", async () => {
+    // Re-mock with no API key
+    jest.doMock("../src/env", () => ({
+      config: {
+        GROQ_API_KEY: "",
+      },
+    }));
+
+    // Re-import the module to pick up the new mock
+    const { analyzeSnippetWithLlm: analyzeWithNoKey } = require("../src/integrations/llm");
+
+    const result = await analyzeWithNoKey({
+      file: "src/api/users.ts",
+      snippet: "const users = await db.users.findMany();",
+    });
+
+    expect(result).toBeNull();
   });
 });
