@@ -3,6 +3,8 @@
  *
  * Loads and merges configuration from .vibescan.yml files,
  * applying defaults and handling overrides.
+ *
+ * @module config/loadConfig
  */
 
 import * as fs from "fs";
