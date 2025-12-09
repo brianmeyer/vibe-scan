@@ -9,11 +9,15 @@
  * Supported languages:
  * - TypeScript/JavaScript: ts-morph (full type-aware analysis)
  * - Python: tree-sitter (fast, fault-tolerant parsing)
+ * - Go: tree-sitter (fast, fault-tolerant parsing)
+ * - Ruby: tree-sitter (fast, fault-tolerant parsing)
  * - Others: Falls back to regex-based analysis
  */
 
 import { TypeScriptAnalyzer, typescriptAnalyzer } from "./typescript";
 import { PythonAnalyzer, pythonAnalyzer } from "./python";
+import { GoAnalyzer, goAnalyzer } from "./go";
+import { RubyAnalyzer, rubyAnalyzer } from "./ruby";
 import {
   LanguageAnalyzer,
   ASTAnalysisResult,
@@ -49,6 +53,8 @@ const analyzers = new Map<SupportedLanguage, LanguageAnalyzer>();
 analyzers.set("typescript", typescriptAnalyzer);
 analyzers.set("javascript", typescriptAnalyzer); // ts-morph handles JS too
 analyzers.set("python", pythonAnalyzer);
+analyzers.set("go", goAnalyzer);
+analyzers.set("ruby", rubyAnalyzer);
 
 /**
  * Analyze a file using the appropriate AST analyzer.

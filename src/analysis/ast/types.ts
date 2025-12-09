@@ -73,7 +73,7 @@ export interface ASTAnalysisResult {
 /**
  * Languages supported by the AST analyzer.
  */
-export type SupportedLanguage = "typescript" | "javascript" | "python" | "go" | "unknown";
+export type SupportedLanguage = "typescript" | "javascript" | "python" | "go" | "ruby" | "unknown";
 
 /**
  * Detect the language from a file path.
@@ -95,6 +95,10 @@ export function detectLanguage(filePath: string): SupportedLanguage {
       return "python";
     case "go":
       return "go";
+    case "rb":
+    case "rake":
+    case "ru":
+      return "ruby";
     default:
       return "unknown";
   }

@@ -517,12 +517,15 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
       if (!this.isAtModuleScope(statement)) continue;
 
       const declarations = statement.getDeclarations();
+      const declKind = statement.getDeclarationKind();
+
       for (const decl of declarations) {
         const line = decl.getStartLineNumber();
         if (!this.shouldReportLine(line, changedLines)) continue;
 
         const varName = decl.getName();
-        const isConst = statement.getDeclarationKind() === VariableDeclarationKind.Const;
+        const isConst = declKind === VariableDeclarationKind.Const;
+        const isLetOrVar = declKind === VariableDeclarationKind.Let || declKind === VariableDeclarationKind.Var;
         const initializer = decl.getInitializer();
 
         // For const, only flag if it's an object/array that could be mutated
@@ -532,7 +535,9 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
         }
 
         // Check if this variable is mutated anywhere in the file
-        if (this.isVariableMutated(sourceFile, varName)) {
+        const isMutated = this.isVariableMutated(sourceFile, varName, isLetOrVar);
+
+        if (isMutated) {
           const context = this.getCodeContext(decl);
 
           findings.push({
@@ -827,23 +832,48 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
   }
 
   private hasChainedCatch(call: CallExpression): boolean {
-    let current: Node = call;
-    while (current) {
-      const parent = current.getParent();
+    // Walk up to find the root of the call chain
+    let root: Node = call;
+    while (true) {
+      const parent = root.getParent();
       if (!parent) break;
 
-      if (Node.isPropertyAccessExpression(parent) && parent.getName() === "catch") {
-        return true;
+      // Keep walking up through property access and call expressions
+      if (Node.isPropertyAccessExpression(parent)) {
+        root = parent;
+        continue;
       }
       if (Node.isCallExpression(parent)) {
-        const expr = parent.getExpression();
+        root = parent;
+        continue;
+      }
+      if (Node.isAwaitExpression(parent)) {
+        root = parent;
+        continue;
+      }
+      break;
+    }
+
+    // Now check if .catch() appears anywhere in the chain
+    const checkForCatch = (node: Node): boolean => {
+      if (Node.isCallExpression(node)) {
+        const expr = node.getExpression();
         if (Node.isPropertyAccessExpression(expr) && expr.getName() === "catch") {
           return true;
         }
+        // Recursively check the expression being called
+        return checkForCatch(expr);
       }
-      current = parent;
-    }
-    return false;
+      if (Node.isPropertyAccessExpression(node)) {
+        return checkForCatch(node.getExpression());
+      }
+      if (Node.isAwaitExpression(node)) {
+        return checkForCatch(node.getExpression());
+      }
+      return false;
+    };
+
+    return checkForCatch(root);
   }
 
   private hasChainedThen(call: CallExpression): boolean {
@@ -909,7 +939,7 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
     return false;
   }
 
-  private isVariableMutated(sourceFile: SourceFile, varName: string): boolean {
+  private isVariableMutated(sourceFile: SourceFile, varName: string, checkReassignment: boolean = false): boolean {
     const identifiers = sourceFile.getDescendantsOfKind(SyntaxKind.Identifier);
 
     for (const id of identifiers) {
@@ -918,11 +948,34 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
       const parent = id.getParent();
       if (!parent) continue;
 
-      // Check for assignment: varName = ...
-      if (Node.isBinaryExpression(parent)) {
+      // Check for reassignment: varName = ... (only for let/var)
+      if (checkReassignment && Node.isBinaryExpression(parent)) {
         const left = parent.getLeft();
         if (left === id && parent.getOperatorToken().getKind() === SyntaxKind.EqualsToken) {
           return true;
+        }
+      }
+
+      // Check for increment/decrement: varName++ or ++varName
+      if (checkReassignment) {
+        if (Node.isPostfixUnaryExpression(parent) || Node.isPrefixUnaryExpression(parent)) {
+          const opKind = parent.getOperatorToken();
+          if (opKind === SyntaxKind.PlusPlusToken || opKind === SyntaxKind.MinusMinusToken) {
+            return true;
+          }
+        }
+        // Check for compound assignment: varName += ...
+        if (Node.isBinaryExpression(parent)) {
+          const left = parent.getLeft();
+          const op = parent.getOperatorToken().getKind();
+          if (left === id && (
+            op === SyntaxKind.PlusEqualsToken ||
+            op === SyntaxKind.MinusEqualsToken ||
+            op === SyntaxKind.AsteriskEqualsToken ||
+            op === SyntaxKind.SlashEqualsToken
+          )) {
+            return true;
+          }
         }
       }
 

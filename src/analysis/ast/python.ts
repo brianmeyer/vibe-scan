@@ -422,8 +422,21 @@ export class PythonAnalyzer implements LanguageAnalyzer {
         }
       }
 
+      // Check if the call is sliced: foo()[:100]
+      // In tree-sitter, this creates a subscript node as parent
+      const parent = call.parent;
+      if (parent && parent.type === "subscript") {
+        // Check if there's a slice child
+        for (const child of parent.children) {
+          if (child.type === "slice") {
+            hasPagination = true;
+            break;
+          }
+        }
+      }
+
       // Also check the parent statement for slice notation
-      const stmt = this.findAncestor(call, ["expression_statement", "assignment"]);
+      const stmt = this.findAncestor(call, ["expression_statement", "assignment", "return_statement"]);
       if (stmt) {
         const stmtText = this.getNodeText(stmt, content);
         if (stmtText.includes("[:") || stmtText.includes("limit") || stmtText.includes("first()")) {

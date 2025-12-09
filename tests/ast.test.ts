@@ -51,8 +51,7 @@ async function getData() {
       expect(result.findings.some((f) => f.ruleId === "UNSAFE_IO")).toBe(false);
     });
 
-    // TODO: Improve .catch() chain detection to walk up the full expression tree
-    it.skip("should NOT flag fetch() with .catch() chain", () => {
+    it("should NOT flag fetch() with .catch() chain", () => {
       const code = `
 async function getData() {
   const response = await fetch('/api/data')
@@ -177,8 +176,7 @@ function getCache(key: string) {
       expect(finding?.context.isModuleScope).toBe(true);
     });
 
-    // TODO: Handle let/var declarations at module scope (currently only handles const)
-    it.skip("should detect let variable mutation", () => {
+    it("should detect let variable mutation", () => {
       const code = `
 let requestCount = 0;
 
@@ -286,25 +284,25 @@ function runCommand(cmd: string) {
   });
 
   describe("Changed lines filtering", () => {
-    // TODO: Line number tracking needs more work to match actual line numbers in content
-    it.skip("should only report findings on changed lines", () => {
+    it("should only report findings on changed lines", () => {
+      // Line numbers: 1=empty, 2=oldFunction, 3=fetch old, 4=}, 5=empty, 6=newFunction, 7=fetch new, 8=}
       const code = `
 async function oldFunction() {
-  await fetch('/old'); // line 2
+  await fetch('/old');
 }
 
 async function newFunction() {
-  await fetch('/new'); // line 6
+  await fetch('/new');
 }
 `;
-      // Only line 6 changed
-      const changedLines = new Set([6]);
+      // Only line 7 (fetch new) changed
+      const changedLines = new Set([7]);
       const result = analyzer.analyze(code, "test.ts", changedLines);
 
       expect(result.parseSuccess).toBe(true);
       const findings = result.findings.filter((f) => f.ruleId === "UNSAFE_IO");
       expect(findings.length).toBe(1);
-      expect(findings[0].line).toBe(6);
+      expect(findings[0].line).toBe(7);
     });
   });
 });
@@ -382,8 +380,7 @@ def get_users():
       expect(result.findings.some((f) => f.ruleId === "UNBOUNDED_QUERY")).toBe(true);
     });
 
-    // TODO: Improve slice detection in Python to look at the full statement
-    it.skip("should NOT flag query with slice", () => {
+    it("should NOT flag query with slice", () => {
       const code = `
 def get_users():
     return User.objects.all()[:100]
@@ -500,10 +497,19 @@ describe("AST Helper Functions", () => {
       expect(canAnalyzeWithAST("src/app.py")).toBe(true);
     });
 
+    it("should return true for Go files", () => {
+      expect(canAnalyzeWithAST("src/app.go")).toBe(true);
+    });
+
+    it("should return true for Ruby files", () => {
+      expect(canAnalyzeWithAST("src/app.rb")).toBe(true);
+      expect(canAnalyzeWithAST("Rakefile.rake")).toBe(true);
+    });
+
     it("should return false for unsupported files", () => {
-      expect(canAnalyzeWithAST("src/app.go")).toBe(false);
-      expect(canAnalyzeWithAST("src/app.rb")).toBe(false);
       expect(canAnalyzeWithAST("README.md")).toBe(false);
+      expect(canAnalyzeWithAST("src/app.java")).toBe(false);
+      expect(canAnalyzeWithAST("Dockerfile")).toBe(false);
     });
   });
 
