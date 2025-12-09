@@ -10,6 +10,7 @@ import {
   parseChangedLinesFromPatch,
   mergeFindings,
   convertASTFindingsToFindings,
+  getIgnoredRanges,
 } from "../src/analysis/ast";
 import { Finding } from "../src/analysis/analyzer";
 
@@ -608,6 +609,61 @@ describe("AST Helper Functions", () => {
       const merged = mergeFindings(astFindings, regexFindings);
 
       expect(merged.length).toBe(1);
+    });
+  });
+
+  describe("getIgnoredRanges", () => {
+    it("should detect TypeScript comments", () => {
+      const code = `
+// This is a comment
+const x = 1; // inline comment
+/* multi
+   line
+   comment */
+const y = 2;
+`;
+      const ranges = getIgnoredRanges(code, "test.ts");
+      expect(ranges).not.toBeNull();
+      expect(ranges!.filter((r) => r.type === "comment").length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("should detect TypeScript string literals", () => {
+      const code = `
+const msg = "Hello world";
+const template = \`Template literal\`;
+`;
+      const ranges = getIgnoredRanges(code, "test.ts");
+      expect(ranges).not.toBeNull();
+      expect(ranges!.filter((r) => r.type === "string").length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("should detect Python comments", () => {
+      const code = `
+# This is a comment
+x = 1  # inline comment
+`;
+      const ranges = getIgnoredRanges(code, "test.py");
+      expect(ranges).not.toBeNull();
+      expect(ranges!.filter((r) => r.type === "comment").length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("should detect Python string literals", () => {
+      const code = `
+msg = "Hello world"
+multiline = """
+Multi-line
+string
+"""
+`;
+      const ranges = getIgnoredRanges(code, "test.py");
+      expect(ranges).not.toBeNull();
+      expect(ranges!.filter((r) => r.type === "string").length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("should return null for unsupported languages", () => {
+      const code = `public class Test { }`;
+      const ranges = getIgnoredRanges(code, "test.java");
+      expect(ranges).toBeNull();
     });
   });
 });

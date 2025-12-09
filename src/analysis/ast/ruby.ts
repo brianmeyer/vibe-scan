@@ -20,6 +20,7 @@ import {
   ASTFinding,
   CodeContext,
   SupportedLanguage,
+  IgnoredRange,
 } from "./types";
 import { RuleId } from "../rules";
 
@@ -93,6 +94,71 @@ export class RubyAnalyzer implements LanguageAnalyzer {
   canAnalyze(filePath: string): boolean {
     const lower = filePath.toLowerCase();
     return lower.endsWith(".rb") || lower.endsWith(".rake") || lower.endsWith(".ru");
+  }
+
+  getIgnoredRanges(content: string): IgnoredRange[] | null {
+    const ranges: IgnoredRange[] = [];
+
+    let tree: Parser.Tree;
+    try {
+      tree = this.parser.parse(content);
+    } catch {
+      return null;
+    }
+
+    const rootNode = tree.rootNode;
+
+    // Helper to collect all nodes of given types
+    const collectNodes = (node: Parser.SyntaxNode, types: Set<string>): Parser.SyntaxNode[] => {
+      const result: Parser.SyntaxNode[] = [];
+      if (types.has(node.type)) {
+        result.push(node);
+      }
+      for (const child of node.children) {
+        result.push(...collectNodes(child, types));
+      }
+      return result;
+    };
+
+    // Ruby comment type: comment
+    const commentTypes = new Set(["comment"]);
+    const comments = collectNodes(rootNode, commentTypes);
+    for (const comment of comments) {
+      ranges.push({
+        startLine: comment.startPosition.row + 1,
+        endLine: comment.endPosition.row + 1,
+        startColumn: comment.startPosition.column + 1,
+        endColumn: comment.endPosition.column + 1,
+        type: "comment",
+      });
+    }
+
+    // Ruby string types
+    const stringTypes = new Set([
+      "string",
+      "string_content",
+      "heredoc_body",
+      "heredoc_content",
+      "symbol",
+      "simple_symbol",
+      "delimited_symbol",
+    ]);
+    const strings = collectNodes(rootNode, stringTypes);
+    for (const str of strings) {
+      // Skip if parent is also a string (avoid duplicates)
+      if (str.parent && stringTypes.has(str.parent.type)) {
+        continue;
+      }
+      ranges.push({
+        startLine: str.startPosition.row + 1,
+        endLine: str.endPosition.row + 1,
+        startColumn: str.startPosition.column + 1,
+        endColumn: str.endPosition.column + 1,
+        type: "string",
+      });
+    }
+
+    return ranges;
   }
 
   analyze(content: string, filePath: string, changedLines?: Set<number>): ASTAnalysisResult {

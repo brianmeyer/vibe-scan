@@ -43,6 +43,9 @@ import {
   convertASTFindingsToFindings,
   parseChangedLinesFromPatch,
   mergeFindings,
+  getIgnoredRanges,
+  IgnoredRange,
+  isInIgnoredRange,
 } from "./ast";
 
 // Import patterns
@@ -742,11 +745,45 @@ export function analyzePullRequestPatchesWithConfig(
     const patchContent = extractAddedLinesFromPatch(file.patch);
     const suppressions = parseSuppressionDirectives(patchContent);
 
+    // Get ignored ranges (comments and strings) for filtering false positives
+    // Only filter regex findings - AST findings have already done proper scope detection
+    let ignoredRanges: IgnoredRange[] | null = null;
+    if (content) {
+      ignoredRanges = getIgnoredRanges(content, file.filename);
+    }
+
     // Check if file is in prototype zone
     const isInPrototypeZone = config.isPrototypeZone(file.filename);
 
+    // Helper to check if a finding should be filtered due to being in comment/string
+    const isInIgnoredContext = (finding: Finding): boolean => {
+      if (!ignoredRanges || !finding.line) return false;
+
+      // TEMPORARY_HACK should NOT be filtered when in comments (it's looking for TODO/FIXME comments)
+      // but SHOULD be filtered when in string literals
+      const shouldFilterComments = finding.kind !== "TEMPORARY_HACK";
+
+      for (const range of ignoredRanges) {
+        // Skip comment ranges for TEMPORARY_HACK
+        if (range.type === "comment" && !shouldFilterComments) {
+          continue;
+        }
+
+        // Check if finding line falls within the range
+        if (finding.line >= range.startLine && finding.line <= range.endLine) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     // Filter and enrich findings
     for (const finding of rawFindings) {
+      // Skip findings in comments/strings (except TEMPORARY_HACK in comments)
+      if (isInIgnoredContext(finding)) {
+        continue;
+      }
+
       // Check if the rule is enabled for this file
       if (isValidRuleId(finding.kind)) {
         const ruleConfig = config.getRuleConfig(finding.kind as RuleId, file.filename);
