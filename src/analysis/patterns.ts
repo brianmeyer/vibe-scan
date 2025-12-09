@@ -380,3 +380,58 @@ export const ACT_PATTERNS: Pattern[] = [
   /\.objects\s*\.\s*create\s*\(/,
   /session\s*\.\s*add\s*\(/,
 ];
+
+// ============================================================================
+// Security pattern constants
+// ============================================================================
+
+// Hardcoded secret patterns (for HARDCODED_SECRET detection)
+export const SECRET_PATTERNS: Pattern[] = [
+  // Generic key/token/secret assignments with high-entropy values
+  /(?:api[_-]?key|apikey|secret[_-]?key|auth[_-]?token|access[_-]?token|private[_-]?key|password|passwd|pwd)\s*[:=]\s*['"`][a-zA-Z0-9_\-]{20,}['"`]/i,
+  // AWS keys
+  /(?:AWS|aws)[_-]?(?:ACCESS|SECRET)[_-]?(?:KEY|ID)\s*[:=]\s*['"`][A-Z0-9]{16,}['"`]/,
+  /AKIA[0-9A-Z]{16}/,  // AWS Access Key ID pattern
+  // Generic token patterns
+  /(?:bearer|token|auth)\s*[:=]\s*['"`][a-zA-Z0-9_\-\.]{20,}['"`]/i,
+  // Database connection strings with credentials
+  /(?:mongodb|postgres|mysql|redis):\/\/[^:]+:[^@]+@/i,
+  // GitHub/GitLab tokens
+  /gh[pousr]_[a-zA-Z0-9]{36,}/,  // GitHub tokens
+  /glpat-[a-zA-Z0-9\-]{20,}/,    // GitLab tokens
+  // Stripe keys
+  /sk_(?:live|test)_[a-zA-Z0-9]{24,}/,
+  /pk_(?:live|test)_[a-zA-Z0-9]{24,}/,
+  // Python specific
+  /(?:SECRET_KEY|API_KEY|AUTH_TOKEN)\s*=\s*['"][a-zA-Z0-9_\-]{20,}['"]/,
+];
+
+// ============================================================================
+// Blocking operation pattern constants
+// ============================================================================
+
+// Blocking/synchronous patterns (for BLOCKING_OPERATION detection)
+export const BLOCKING_PATTERNS: Pattern[] = [
+  // Node.js fs sync operations
+  /fs\s*\.\s*readFileSync\s*\(/,
+  /fs\s*\.\s*writeFileSync\s*\(/,
+  /fs\s*\.\s*appendFileSync\s*\(/,
+  /fs\s*\.\s*existsSync\s*\(/,
+  /fs\s*\.\s*mkdirSync\s*\(/,
+  /fs\s*\.\s*readdirSync\s*\(/,
+  /fs\s*\.\s*statSync\s*\(/,
+  /fs\s*\.\s*unlinkSync\s*\(/,
+  /fs\s*\.\s*copyFileSync\s*\(/,
+  /readFileSync\s*\(/,
+  /writeFileSync\s*\(/,
+  // Node.js child_process sync operations
+  /execSync\s*\(/,
+  /spawnSync\s*\(/,
+  /execFileSync\s*\(/,
+  // Node.js crypto sync operations (CPU-intensive)
+  /crypto\s*\.\s*pbkdf2Sync\s*\(/,
+  /crypto\s*\.\s*scryptSync\s*\(/,
+  /crypto\s*\.\s*randomFillSync\s*\(/,
+  // Python blocking patterns (in async context)
+  /time\s*\.\s*sleep\s*\(/,  // In async code, should use asyncio.sleep
+];
