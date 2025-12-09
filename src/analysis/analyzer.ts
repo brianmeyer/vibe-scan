@@ -715,48 +715,16 @@ export function analyzePullRequestPatchesWithConfig(
     let rawFindings: Finding[];
     const content = fileContents?.get(file.filename);
 
-    if (content && canAnalyzeWithAST(file.filename)) {
-      // Hybrid AST + regex analysis
-      const changedLines = parseChangedLinesFromPatch(file.patch);
-      const astResult = analyzeWithAST(content, file.filename, { changedLines });
-
-      if (astResult && astResult.parseSuccess) {
-        // AST analysis succeeded - merge with regex findings
-        const astFindings = convertASTFindingsToFindings(astResult.findings, file.filename);
-        const regexFindings = analyzePatch(file.filename, file.patch);
-        rawFindings = mergeFindings(astFindings, regexFindings);
-        console.log(
-          `[Analyzer] Hybrid analysis for ${file.filename}: ${astFindings.length} AST + ${regexFindings.length} regex -> ${rawFindings.length} merged`
-        );
-      } else {
-        // AST parsing failed - fall back to regex
-        rawFindings = analyzePatch(file.filename, file.patch);
-        console.log(
-          `[Analyzer] AST parse failed for ${file.filename}, using regex only: ${rawFindings.length} findings`
-        );
-      }
-    } else {
-      // No content or unsupported language - regex only
-      rawFindings = analyzePatch(file.filename, file.patch);
-    }
-
-    // Parse suppression directives from the patch content
-    // Note: We extract added lines from the patch for suppression parsing
-    const patchContent = extractAddedLinesFromPatch(file.patch);
-    const suppressions = parseSuppressionDirectives(patchContent);
-
-    // Get ignored ranges (comments and strings) for filtering false positives
-    // Only filter regex findings - AST findings have already done proper scope detection
+    // Get ignored ranges (comments and strings) for filtering regex false positives
+    // This must be computed BEFORE analysis so we can filter regex findings before merging
     let ignoredRanges: IgnoredRange[] | null = null;
     if (content) {
       ignoredRanges = getIgnoredRanges(content, file.filename);
     }
 
-    // Check if file is in prototype zone
-    const isInPrototypeZone = config.isPrototypeZone(file.filename);
-
-    // Helper to check if a finding should be filtered due to being in comment/string
-    const isInIgnoredContext = (finding: Finding): boolean => {
+    // Helper to check if a regex finding should be filtered due to being in comment/string
+    // NOTE: This is only applied to regex findings - AST findings are already scope-aware
+    const isRegexFindingInIgnoredContext = (finding: Finding): boolean => {
       if (!ignoredRanges || !finding.line) return false;
 
       // TEMPORARY_HACK should NOT be filtered when in comments (it's looking for TODO/FIXME comments)
@@ -777,12 +745,52 @@ export function analyzePullRequestPatchesWithConfig(
       return false;
     };
 
+    if (content && canAnalyzeWithAST(file.filename)) {
+      // Hybrid AST + regex analysis
+      const changedLines = parseChangedLinesFromPatch(file.patch);
+      const astResult = analyzeWithAST(content, file.filename, { changedLines });
+
+      if (astResult && astResult.parseSuccess) {
+        // AST analysis succeeded - merge with filtered regex findings
+        const astFindings = convertASTFindingsToFindings(astResult.findings, file.filename);
+        const regexFindings = analyzePatch(file.filename, file.patch);
+
+        // Filter regex findings to remove false positives in comments/strings
+        // AST findings are already scope-aware and should NOT be filtered
+        const filteredRegexFindings = regexFindings.filter((f) => !isRegexFindingInIgnoredContext(f));
+
+        rawFindings = mergeFindings(astFindings, filteredRegexFindings);
+        console.log(
+          `[Analyzer] Hybrid analysis for ${file.filename}: ${astFindings.length} AST + ${filteredRegexFindings.length} regex (${regexFindings.length - filteredRegexFindings.length} filtered) -> ${rawFindings.length} merged`
+        );
+      } else {
+        // AST parsing failed - fall back to regex with filtering
+        const regexFindings = analyzePatch(file.filename, file.patch);
+        rawFindings = regexFindings.filter((f) => !isRegexFindingInIgnoredContext(f));
+        console.log(
+          `[Analyzer] AST parse failed for ${file.filename}, using regex only: ${rawFindings.length} findings (${regexFindings.length - rawFindings.length} filtered)`
+        );
+      }
+    } else {
+      // No content or unsupported language - regex only with filtering if content available
+      const regexFindings = analyzePatch(file.filename, file.patch);
+      if (ignoredRanges) {
+        rawFindings = regexFindings.filter((f) => !isRegexFindingInIgnoredContext(f));
+      } else {
+        rawFindings = regexFindings;
+      }
+    }
+
+    // Parse suppression directives from the patch content
+    // Note: We extract added lines from the patch for suppression parsing
+    const patchContent = extractAddedLinesFromPatch(file.patch);
+    const suppressions = parseSuppressionDirectives(patchContent);
+
+    // Check if file is in prototype zone
+    const isInPrototypeZone = config.isPrototypeZone(file.filename);
+
     // Filter and enrich findings
     for (const finding of rawFindings) {
-      // Skip findings in comments/strings (except TEMPORARY_HACK in comments)
-      if (isInIgnoredContext(finding)) {
-        continue;
-      }
 
       // Check if the rule is enabled for this file
       if (isValidRuleId(finding.kind)) {
