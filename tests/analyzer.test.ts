@@ -2,7 +2,7 @@
  * Unit tests for the core static analysis logic.
  */
 
-import { analyzePatch } from "../src/analysis/analyzer";
+import { analyzePatch, analyzePullRequestPatchesWithConfig, createDefaultConfig } from "../src/analysis/analyzer";
 
 describe("analyzePatch", () => {
   describe("UNBOUNDED_QUERY detection", () => {
@@ -305,5 +305,115 @@ describe("analyzePatch", () => {
       expect(todoFinding).toBeDefined();
       expect(todoFinding?.line).toBe(11); // Line 10 is context, +1 for the TODO line
     });
+  });
+});
+
+describe("analyzePullRequestPatchesWithConfig - Comment/String filtering", () => {
+  it("should NOT flag fetch() inside a comment when fileContents is provided", () => {
+    // File content must match patch line numbers exactly
+    const fileContent = `// This is a comment with fetch() in it
+// Another line with axios.get()
+const x = 1;
+`;
+    const patch = `@@ -1,1 +1,3 @@
++// This is a comment with fetch() in it
++// Another line with axios.get()
++const x = 1;
+`;
+
+    const files = [{ filename: "test.ts", patch }];
+    const fileContents = new Map<string, string>();
+    fileContents.set("test.ts", fileContent);
+
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+      fileContents,
+    });
+
+    // Should NOT have UNSAFE_IO for fetch() in comment
+    expect(findings.filter((f) => f.kind === "UNSAFE_IO").length).toBe(0);
+  });
+
+  it("should flag fetch() in actual code", () => {
+    const fileContent = `const data = await fetch('/api/users');
+`;
+    const patch = `@@ -1,1 +1,1 @@
++const data = await fetch('/api/users');
+`;
+
+    const files = [{ filename: "test.ts", patch }];
+    const fileContents = new Map<string, string>();
+    fileContents.set("test.ts", fileContent);
+
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+      fileContents,
+    });
+
+    // Should have UNSAFE_IO for actual fetch() call
+    expect(findings.some((f) => f.kind === "UNSAFE_IO")).toBe(true);
+  });
+
+  it("should still flag TEMPORARY_HACK in comments (not filtered)", () => {
+    const fileContent = `// TODO: fix this later
+const x = 1;
+`;
+    const patch = `@@ -1,1 +1,2 @@
++// TODO: fix this later
++const x = 1;
+`;
+
+    const files = [{ filename: "test.ts", patch }];
+    const fileContents = new Map<string, string>();
+    fileContents.set("test.ts", fileContent);
+
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+      fileContents,
+    });
+
+    // TEMPORARY_HACK should NOT be filtered when in comments
+    expect(findings.some((f) => f.kind === "TEMPORARY_HACK")).toBe(true);
+  });
+
+  it("should NOT flag patterns inside string literals", () => {
+    const fileContent = `const message = "Use fetch() to get data from the API";
+const query = "SELECT * FROM users";
+`;
+    const patch = `@@ -1,1 +1,2 @@
++const message = "Use fetch() to get data from the API";
++const query = "SELECT * FROM users";
+`;
+
+    const files = [{ filename: "test.ts", patch }];
+    const fileContents = new Map<string, string>();
+    fileContents.set("test.ts", fileContent);
+
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+      fileContents,
+    });
+
+    // Should NOT flag UNSAFE_IO or UNBOUNDED_QUERY for patterns in strings
+    expect(findings.filter((f) => f.kind === "UNSAFE_IO").length).toBe(0);
+    expect(findings.filter((f) => f.kind === "UNBOUNDED_QUERY").length).toBe(0);
+  });
+
+  it("should work without fileContents (regex-only mode, no filtering)", () => {
+    const patch = `@@ -1,1 +1,2 @@
++// This has fetch() in a comment
++const x = 1;
+`;
+
+    const files = [{ filename: "test.ts", patch }];
+
+    // No fileContents provided - should use regex only
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+    });
+
+    // Without fileContents, we can't filter comments, so regex will find fetch()
+    // This is expected behavior - we need file content for accurate filtering
+    expect(findings.some((f) => f.kind === "UNSAFE_IO")).toBe(true);
   });
 });

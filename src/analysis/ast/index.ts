@@ -27,6 +27,9 @@ import {
   isLanguageSupported,
   ASTAnalysisOptions,
   CodeContext,
+  IgnoredRange,
+  isInIgnoredRange,
+  isLineFullyIgnored,
 } from "./types";
 import { Finding, Severity } from "../analyzer";
 import { RuleId } from "../rules";
@@ -38,8 +41,11 @@ export {
   SupportedLanguage,
   CodeContext,
   ASTAnalysisOptions,
+  IgnoredRange,
   detectLanguage,
   isLanguageSupported,
+  isInIgnoredRange,
+  isLineFullyIgnored,
 };
 
 // ============================================================================
@@ -89,6 +95,29 @@ export function analyzeWithAST(
 export function canAnalyzeWithAST(filePath: string): boolean {
   const language = detectLanguage(filePath);
   return isLanguageSupported(language) && analyzers.has(language);
+}
+
+/**
+ * Get ignored ranges (comments and strings) for a file.
+ * These ranges should be excluded from regex matching to avoid false positives.
+ *
+ * @param content - The full source code content
+ * @param filePath - The file path (used for language detection)
+ * @returns Array of ignored ranges, or null if parsing fails or language not supported
+ */
+export function getIgnoredRanges(content: string, filePath: string): IgnoredRange[] | null {
+  const language = detectLanguage(filePath);
+
+  if (!isLanguageSupported(language)) {
+    return null;
+  }
+
+  const analyzer = analyzers.get(language);
+  if (!analyzer) {
+    return null;
+  }
+
+  return analyzer.getIgnoredRanges(content);
 }
 
 /**

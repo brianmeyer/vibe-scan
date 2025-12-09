@@ -36,6 +36,7 @@ import {
   CodeContext,
   SupportedLanguage,
   ASTAnalysisOptions,
+  IgnoredRange,
 } from "./types";
 import { RuleId } from "../rules";
 import { Severity } from "../analyzer";
@@ -179,6 +180,179 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
   canAnalyze(filePath: string): boolean {
     const ext = filePath.toLowerCase().split(".").pop();
     return ["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(ext || "");
+  }
+
+  getIgnoredRanges(content: string): IgnoredRange[] | null {
+    const ranges: IgnoredRange[] = [];
+
+    // Try to parse the file
+    let sourceFile: SourceFile;
+    try {
+      const tempPath = "__temp_ignored_ranges__.ts";
+      const existing = this.project.getSourceFile(tempPath);
+      if (existing) {
+        this.project.removeSourceFile(existing);
+      }
+      sourceFile = this.project.createSourceFile(tempPath, content, { overwrite: true });
+    } catch {
+      return null;
+    }
+
+    try {
+      // Get all comments
+      const allComments = [
+        ...sourceFile.getDescendantsOfKind(SyntaxKind.SingleLineCommentTrivia),
+        ...sourceFile.getDescendantsOfKind(SyntaxKind.MultiLineCommentTrivia),
+      ];
+
+      // ts-morph doesn't expose comment trivia as descendants directly
+      // We need to use a different approach - scan the source text
+      const sourceText = sourceFile.getFullText();
+      const lines = sourceText.split("\n");
+
+      // Find single-line comments (//)
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const commentIndex = line.indexOf("//");
+        if (commentIndex !== -1) {
+          // Check if it's inside a string (crude check)
+          const beforeComment = line.slice(0, commentIndex);
+          const singleQuotes = (beforeComment.match(/'/g) || []).length;
+          const doubleQuotes = (beforeComment.match(/"/g) || []).length;
+          const backticks = (beforeComment.match(/`/g) || []).length;
+
+          // If odd number of quotes, we're inside a string
+          if (singleQuotes % 2 === 0 && doubleQuotes % 2 === 0 && backticks % 2 === 0) {
+            ranges.push({
+              startLine: i + 1,
+              endLine: i + 1,
+              startColumn: commentIndex + 1,
+              endColumn: line.length + 1,
+              type: "comment",
+            });
+          }
+        }
+      }
+
+      // Find multi-line comments (/* ... */)
+      let inMultiLineComment = false;
+      let commentStartLine = 0;
+      let commentStartCol = 0;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        if (!inMultiLineComment) {
+          const startIdx = line.indexOf("/*");
+          if (startIdx !== -1) {
+            // Check if it's not inside a string
+            const beforeComment = line.slice(0, startIdx);
+            const singleQuotes = (beforeComment.match(/'/g) || []).length;
+            const doubleQuotes = (beforeComment.match(/"/g) || []).length;
+            const backticks = (beforeComment.match(/`/g) || []).length;
+
+            if (singleQuotes % 2 === 0 && doubleQuotes % 2 === 0 && backticks % 2 === 0) {
+              inMultiLineComment = true;
+              commentStartLine = i + 1;
+              commentStartCol = startIdx + 1;
+
+              // Check if it ends on the same line
+              const endIdx = line.indexOf("*/", startIdx + 2);
+              if (endIdx !== -1) {
+                ranges.push({
+                  startLine: i + 1,
+                  endLine: i + 1,
+                  startColumn: startIdx + 1,
+                  endColumn: endIdx + 3, // Include "*/"
+                  type: "comment",
+                });
+                inMultiLineComment = false;
+              }
+            }
+          }
+        } else {
+          const endIdx = line.indexOf("*/");
+          if (endIdx !== -1) {
+            ranges.push({
+              startLine: commentStartLine,
+              endLine: i + 1,
+              startColumn: commentStartCol,
+              endColumn: endIdx + 3,
+              type: "comment",
+            });
+            inMultiLineComment = false;
+          }
+        }
+      }
+
+      // Helper to get column from position
+      const getColumn = (pos: number, lineNumber: number): number => {
+        // Find start of line by counting backwards
+        let lineStart = 0;
+        let currentLine = 1;
+        for (let i = 0; i < sourceText.length && currentLine < lineNumber; i++) {
+          if (sourceText[i] === "\n") {
+            currentLine++;
+            if (currentLine === lineNumber) {
+              lineStart = i + 1;
+              break;
+            }
+          }
+        }
+        return pos - lineStart + 1;
+      };
+
+      // Find string literals
+      sourceFile.getDescendantsOfKind(SyntaxKind.StringLiteral).forEach((node) => {
+        const startLine = node.getStartLineNumber();
+        const endLine = node.getEndLineNumber();
+        ranges.push({
+          startLine,
+          endLine,
+          startColumn: getColumn(node.getStart(), startLine),
+          endColumn: getColumn(node.getEnd(), endLine),
+          type: "string",
+        });
+      });
+
+      // Find template literals
+      sourceFile.getDescendantsOfKind(SyntaxKind.NoSubstitutionTemplateLiteral).forEach((node) => {
+        const startLine = node.getStartLineNumber();
+        const endLine = node.getEndLineNumber();
+        ranges.push({
+          startLine,
+          endLine,
+          startColumn: getColumn(node.getStart(), startLine),
+          endColumn: getColumn(node.getEnd(), endLine),
+          type: "string",
+        });
+      });
+
+      sourceFile.getDescendantsOfKind(SyntaxKind.TemplateExpression).forEach((node) => {
+        const startLine = node.getStartLineNumber();
+        const endLine = node.getEndLineNumber();
+        ranges.push({
+          startLine,
+          endLine,
+          startColumn: getColumn(node.getStart(), startLine),
+          endColumn: getColumn(node.getEnd(), endLine),
+          type: "string",
+        });
+      });
+
+      // Clean up
+      this.project.removeSourceFile(sourceFile);
+
+      return ranges;
+    } catch {
+      // Clean up on error
+      try {
+        this.project.removeSourceFile(sourceFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+      return null;
+    }
   }
 
   analyze(content: string, filePath: string, changedLines?: Set<number>): ASTAnalysisResult {
