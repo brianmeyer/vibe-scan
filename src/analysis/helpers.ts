@@ -18,6 +18,9 @@ import {
   BACKOFF_PATTERNS,
   ACT_PATTERNS,
   EXTERNAL_CALL_PATTERNS,
+  matchesPattern,
+  matchesAnyPattern,
+  Pattern,
 } from "./patterns";
 
 /**
@@ -47,7 +50,7 @@ export function hasErrorHandlingNearby(
 
   for (let i = start; i < end; i++) {
     const line = patchLines[i];
-    if (line && ERROR_HANDLING_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (line && matchesAnyPattern(line, ERROR_HANDLING_PATTERNS)) {
       return true;
     }
   }
@@ -67,7 +70,7 @@ export function hasValidationNearby(
 
   for (let i = start; i < end; i++) {
     const line = patchLines[i];
-    if (line && VALIDATION_PATTERNS.some((pattern) => line.toLowerCase().includes(pattern.toLowerCase()))) {
+    if (line && matchesAnyPattern(line.toLowerCase(), VALIDATION_PATTERNS)) {
       return true;
     }
   }
@@ -86,7 +89,7 @@ export function isInRouteHandlerContext(
 
   for (let i = start; i < currentIndex; i++) {
     const line = patchLines[i];
-    if (line && ROUTE_HANDLER_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (line && matchesAnyPattern(line, ROUTE_HANDLER_PATTERNS)) {
       return true;
     }
   }
@@ -105,7 +108,7 @@ export function hasLoopNearby(
 
   for (let i = start; i < currentIndex; i++) {
     const line = patchLines[i];
-    if (line && LOOP_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (line && matchesAnyPattern(line, LOOP_PATTERNS)) {
       return true;
     }
   }
@@ -124,7 +127,7 @@ export function isInAsyncContext(
 
   for (let i = start; i < currentIndex; i++) {
     const line = patchLines[i];
-    if (line && ASYNC_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (line && matchesAnyPattern(line, ASYNC_PATTERNS)) {
       return true;
     }
   }
@@ -247,7 +250,7 @@ export function hasPaginationNearby(
 
   for (let i = start; i < end; i++) {
     const line = patchLines[i];
-    if (line && PAGINATION_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (line && matchesAnyPattern(line, PAGINATION_PATTERNS)) {
       return true;
     }
   }
@@ -267,7 +270,7 @@ export function hasBatchingNearby(
 
   for (let i = start; i < end; i++) {
     const line = patchLines[i];
-    if (line && BATCHING_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (line && matchesAnyPattern(line, BATCHING_PATTERNS)) {
       return true;
     }
   }
@@ -289,7 +292,7 @@ export function isInRequestContext(
     if (!line) continue;
 
     // Check for route handlers
-    if (ROUTE_HANDLER_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (matchesAnyPattern(line, ROUTE_HANDLER_PATTERNS)) {
       return true;
     }
     // Check for req/res usage
@@ -326,7 +329,7 @@ export function hasBackoffNearby(
 
   for (let i = start; i < end; i++) {
     const line = patchLines[i];
-    if (line && BACKOFF_PATTERNS.some((pattern) => line.toLowerCase().includes(pattern.toLowerCase()))) {
+    if (line && matchesAnyPattern(line.toLowerCase(), BACKOFF_PATTERNS)) {
       return true;
     }
   }
@@ -373,7 +376,7 @@ export function hasActPatternNearby(
     const line = patchLines[i];
     if (!line || !line.startsWith("+")) continue;
 
-    if (ACT_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (matchesAnyPattern(line, ACT_PATTERNS)) {
       return true;
     }
   }
@@ -386,15 +389,17 @@ export function hasActPatternNearby(
  */
 export function extractCallSignature(content: string): string | null {
   for (const pattern of EXTERNAL_CALL_PATTERNS) {
-    if (content.includes(pattern)) {
+    if (matchesPattern(content, pattern)) {
       // Try to extract the URL or call signature
       // Match fetch("url") or axios.get("url") etc.
       const urlMatch = content.match(/["'`]([^"'`]+)["'`]/);
+      // Convert pattern to string for signature key
+      const patternStr = typeof pattern === "string" ? pattern : pattern.source;
       if (urlMatch) {
-        return `${pattern}${urlMatch[1]}`;
+        return `${patternStr}${urlMatch[1]}`;
       }
       // If no URL found, use the pattern + a hash of the line
-      return `${pattern}:${content.trim().slice(0, 50)}`;
+      return `${patternStr}:${content.trim().slice(0, 50)}`;
     }
   }
   return null;
@@ -414,7 +419,7 @@ export function hasIOInLoopBody(
     const line = patchLines[i];
     if (!line || !line.startsWith("+")) continue;
 
-    if (IO_PATTERNS.some((pattern) => line.includes(pattern))) {
+    if (matchesAnyPattern(line, IO_PATTERNS)) {
       return true;
     }
   }
