@@ -1,5 +1,7 @@
 # Vibe Scan
 
+[![Vibe Score](https://img.shields.io/badge/vibe--scan-enabled-brightgreen)](https://github.com/brianmeyer/vibe-scan)
+
 A GitHub App that analyzes pull requests for "vibe-coded" production risks. Combines static analysis with LLM-powered review to catch scaling issues, concurrency problems, and other patterns that commonly cause production failures in AI-generated or prototype code.
 
 ## What is "Vibe-Coded"?

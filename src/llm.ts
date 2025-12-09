@@ -49,6 +49,25 @@ export const LLM_ISSUE_KIND_LABELS: Record<LlmIssueKind, string> = {
 export type LlmSeverity = "low" | "medium" | "high";
 
 /**
+ * A compact summary of a static finding to feed into the LLM.
+ * This is a simplified version of the full Finding type for token efficiency.
+ */
+export interface StaticFindingSummary {
+  /** The rule ID that triggered this finding */
+  ruleId: string;
+  /** Human-readable category (same as ruleId or a label) */
+  kind: string;
+  /** File path where the issue was found */
+  file: string;
+  /** Line number in the file */
+  line: number;
+  /** Severity level */
+  severity: "low" | "medium" | "high";
+  /** Short human-readable description */
+  summary: string;
+}
+
+/**
  * A single issue identified by the LLM.
  */
 export interface LlmIssue {
@@ -105,22 +124,42 @@ function createOpenAIClient(): OpenAI | null {
 
 /**
  * Build the prompt for production risk analysis.
+ * Includes static findings as context for the LLM to reason about.
  */
-function buildVibePrompt(params: {
+export function buildVibePrompt(params: {
   file: string;
   language?: string;
   snippet: string;
   diffContext?: string;
+  staticFindings?: StaticFindingSummary[];
 }): string {
-  const { file, language, snippet, diffContext } = params;
+  const { file, language, snippet, diffContext, staticFindings } = params;
 
   const languageHint = language ? ` (${language})` : "";
   const diffSection = diffContext
     ? `\n\nDiff context (surrounding changes):\n\`\`\`\n${diffContext}\n\`\`\``
     : "";
 
-  return `You are a senior production engineer analyzing backend code for production risks in a startup environment.
+  // Build static findings section if provided
+  let staticFindingsSection = "";
+  if (staticFindings && staticFindings.length > 0) {
+    // Cap at 50 findings to avoid token explosion
+    const cappedFindings = staticFindings.slice(0, 50);
+    const staticFindingsJson = JSON.stringify(cappedFindings, null, 2);
+    staticFindingsSection = `
+Here is a compact JSON summary of static analysis findings that were already detected:
 
+\`\`\`json
+${staticFindingsJson}
+\`\`\`
+
+Use these as primary evidence of potential problems. Cluster related findings into higher-level issues rather than re-listing each one individually. Connect issues to environment assumptions, observability gaps, and resilience gaps where relevant.
+
+`;
+  }
+
+  return `You are a senior production engineer analyzing backend code for production risks in a startup environment.
+${staticFindingsSection}
 Your task is to identify issues and classify them into the following production risk categories:
 
 **SCALING_RISK**: Problems that will cause performance or cost issues as traffic grows.
@@ -197,8 +236,9 @@ Severity guidelines:
 
 Rules:
 - If there are no meaningful issues, return { "issues": [], "architectureSummary": null }
-- Group related problems into a single issue with a clear title
-- Focus on issues that would cause production failures or hard-to-debug problems
+- Focus on grouping and explaining the most important issues based on the static findings
+- Do not re-list every finding individually; cluster related findings into a smaller number of higher-level issues
+- When possible, connect issues to environment assumptions, observability gaps, and resilience gaps
 - Keep explanations and fixes concise (max 2 sentences each)
 - Do NOT include any text outside the JSON object
 - Prioritize scaling issues that grow with data size or tenant count`;
@@ -220,6 +260,7 @@ export async function analyzeSnippetWithLlm(params: {
   snippet: string;
   diffContext?: string;
   modelName?: string;
+  staticFindings?: StaticFindingSummary[];
 }): Promise<LlmAnalysisResult | null> {
   // Check if API key is configured
   if (!config.GROQ_API_KEY) {
@@ -234,7 +275,13 @@ export async function analyzeSnippetWithLlm(params: {
   }
 
   const model = params.modelName || "llama-3.1-8b-instant";
-  const prompt = buildVibePrompt(params);
+  const prompt = buildVibePrompt({
+    file: params.file,
+    language: params.language,
+    snippet: params.snippet,
+    diffContext: params.diffContext,
+    staticFindings: params.staticFindings,
+  });
 
   try {
     const completion = await openai.chat.completions.create({
