@@ -4,6 +4,8 @@
 
 A GitHub App that analyzes pull requests for "vibe-coded" production risks. Combines static analysis with LLM-powered review to catch scaling issues, concurrency problems, and other patterns that commonly cause production failures in AI-generated or prototype code.
 
+Now with repo-level `.vibescan.yml` configuration support!
+
 ## What is "Vibe-Coded"?
 
 "Vibe-coded" refers to code that:
