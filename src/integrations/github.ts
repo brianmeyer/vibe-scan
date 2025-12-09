@@ -14,6 +14,7 @@ import {
 import { computeVibeScore, VibeScoreResult } from "../analysis/scoring";
 import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../config/loader";
 import { extractFileStructure } from "../analysis/structure";
+import { SECRET_PATTERNS } from "../analysis/patterns";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",
@@ -103,15 +104,19 @@ async function fetchRepoConfig(
 // File Content Fetching
 // ============================================================================
 
+/** Maximum file size to fetch for LLM analysis (50KB) */
+const MAX_FILE_SIZE_BYTES = 50 * 1024;
+
 /**
  * Fetch the raw content of a file from the repository at a specific ref.
+ * Enforces a size limit to prevent memory issues with large files.
  *
  * @param octokit - Authenticated Octokit instance
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param path - File path within the repository
  * @param ref - Git ref (SHA, branch, or tag)
- * @returns The file content as a string, or null if not found/error
+ * @returns The file content as a string, or null if not found/too large/error
  */
 async function fetchFileContent(
   octokit: Octokit,
@@ -129,15 +134,42 @@ async function fetchFileContent(
       ref,
     });
 
-    const data = response.data as { content?: string; encoding?: string; type?: string };
+    const data = response.data as {
+      content?: string;
+      encoding?: string;
+      type?: string;
+      size?: number;
+    };
 
-    if (data.type !== "file" || !data.content) {
-      console.log(`[GitHub] ${path} is not a file or has no content`);
+    if (data.type !== "file") {
+      console.log(`[GitHub] ${path} is not a file`);
+      return null;
+    }
+
+    // Check file size before decoding to prevent memory issues
+    if (data.size && data.size > MAX_FILE_SIZE_BYTES) {
+      console.warn(
+        `[GitHub] Skipping large file: ${path} (${Math.round(data.size / 1024)}KB > ${MAX_FILE_SIZE_BYTES / 1024}KB limit)`
+      );
+      return null;
+    }
+
+    if (!data.content) {
+      console.log(`[GitHub] ${path} has no content`);
       return null;
     }
 
     // GitHub returns base64-encoded content for files
     const content = Buffer.from(data.content, "base64").toString("utf-8");
+
+    // Double-check decoded size (base64 can be misleading)
+    if (content.length > MAX_FILE_SIZE_BYTES) {
+      console.warn(
+        `[GitHub] Skipping large file after decode: ${path} (${Math.round(content.length / 1024)}KB)`
+      );
+      return null;
+    }
+
     console.log(`[GitHub] Fetched ${path}: ${content.length} chars`);
     return content;
   } catch (error) {
@@ -149,6 +181,32 @@ async function fetchFileContent(
     }
     return null;
   }
+}
+
+// ============================================================================
+// Secret Redaction
+// ============================================================================
+
+/**
+ * Redact secrets from content before sending to LLM.
+ * Replaces any text matching SECRET_PATTERNS with [REDACTED_SECRET].
+ *
+ * @param content - The content to redact secrets from
+ * @returns Content with secrets replaced by [REDACTED_SECRET]
+ */
+function redactSecrets(content: string): string {
+  let redacted = content;
+  for (const pattern of SECRET_PATTERNS) {
+    if (typeof pattern === "string") {
+      // For string patterns, use simple replacement
+      redacted = redacted.split(pattern).join("[REDACTED_SECRET]");
+    } else {
+      // For RegExp patterns, use global replacement
+      const globalPattern = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+      redacted = redacted.replace(globalPattern, "[REDACTED_SECRET]");
+    }
+  }
+  return redacted;
 }
 
 // ============================================================================
@@ -553,8 +611,9 @@ export function registerEventHandlers(): void {
           try {
             const content = await fetchFileContent(octokit, owner, repo, candidate.file, headSha);
             if (content) {
-              fullContent = content;
-              // Generate structural summary for LLM context
+              // Redact secrets before sending to LLM
+              fullContent = redactSecrets(content);
+              // Generate structural summary for LLM context (use original for accurate structure)
               fileStructure = extractFileStructure(content, candidate.file);
               console.log(`[LLM] Generated structure for ${candidate.file}`);
             }
