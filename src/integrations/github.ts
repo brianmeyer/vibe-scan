@@ -13,6 +13,7 @@ import {
 } from "./llm";
 import { computeVibeScore, VibeScoreResult } from "../analysis/scoring";
 import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../config/loader";
+import { extractFileStructure } from "../analysis/structure";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",
@@ -96,6 +97,58 @@ async function fetchRepoConfig(
 
   console.log(`[Config] No ${CONFIG_FILE_NAME} found, using defaults`);
   return createDefaultConfig();
+}
+
+// ============================================================================
+// File Content Fetching
+// ============================================================================
+
+/**
+ * Fetch the raw content of a file from the repository at a specific ref.
+ *
+ * @param octokit - Authenticated Octokit instance
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param path - File path within the repository
+ * @param ref - Git ref (SHA, branch, or tag)
+ * @returns The file content as a string, or null if not found/error
+ */
+async function fetchFileContent(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string
+): Promise<string | null> {
+  try {
+    console.log(`[GitHub] Fetching file content: ${path} @ ${ref.slice(0, 7)}`);
+    const response = await octokit.request("GET /repos/{owner}/{repo}/contents/{path}", {
+      owner,
+      repo,
+      path,
+      ref,
+    });
+
+    const data = response.data as { content?: string; encoding?: string; type?: string };
+
+    if (data.type !== "file" || !data.content) {
+      console.log(`[GitHub] ${path} is not a file or has no content`);
+      return null;
+    }
+
+    // GitHub returns base64-encoded content for files
+    const content = Buffer.from(data.content, "base64").toString("utf-8");
+    console.log(`[GitHub] Fetched ${path}: ${content.length} chars`);
+    return content;
+  } catch (error) {
+    const err = error as { status?: number };
+    if (err.status === 404) {
+      console.log(`[GitHub] File not found: ${path}`);
+    } else {
+      console.warn(`[GitHub] Error fetching ${path}:`, error);
+    }
+    return null;
+  }
 }
 
 // ============================================================================
@@ -493,11 +546,30 @@ export function registerEventHandlers(): void {
           // Filter static findings to those relevant to this candidate file
           const fileFindings = staticFindingSummaries.filter((f) => f.file === candidate.file);
 
+          // Fetch full file content for deep analysis (Smart Funnel - Tier 2/3)
+          let fullContent: string | undefined;
+          let fileStructure: string | undefined;
+
+          try {
+            const content = await fetchFileContent(octokit, owner, repo, candidate.file, headSha);
+            if (content) {
+              fullContent = content;
+              // Generate structural summary for LLM context
+              fileStructure = extractFileStructure(content, candidate.file);
+              console.log(`[LLM] Generated structure for ${candidate.file}`);
+            }
+          } catch (fetchErr) {
+            console.warn(`[LLM] Could not fetch full content for ${candidate.file}:`, fetchErr);
+            // Continue with just the patch if full content fetch fails
+          }
+
           const result = await analyzeSnippetWithLlm({
             file: candidate.file,
             language: candidate.language,
             snippet: candidate.patch,
             staticFindings: fileFindings,
+            fullContent,
+            fileStructure,
           });
 
           if (!result) {
