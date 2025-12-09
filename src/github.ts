@@ -2,9 +2,16 @@ import { Webhooks } from "@octokit/webhooks";
 import { Octokit } from "octokit";
 import { createAppAuth } from "@octokit/auth-app";
 import { config } from "./config";
-import { analyzePullRequestPatches, Finding } from "./analyzer";
-import { analyzeSnippetWithLlm, LlmAnalysisResult, LlmIssue } from "./llm";
+import { analyzePullRequestPatchesWithConfig, Finding } from "./analyzer";
+import {
+  analyzeSnippetWithLlm,
+  LlmAnalysisResult,
+  LlmIssue,
+  LLM_ISSUE_KIND_LABELS,
+  groupIssuesByKind,
+} from "./llm";
 import { computeVibeScore, VibeScoreResult } from "./scoring";
+import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "./config/loadConfig";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",
@@ -23,6 +30,71 @@ function createInstallationOctokit(installationId: number): Octokit {
       installationId,
     },
   });
+}
+
+// ============================================================================
+// Config Fetching
+// ============================================================================
+
+const CONFIG_FILE_NAME = ".vibescan.yml";
+
+/**
+ * Fetch the .vibescan.yml configuration from a repository.
+ * Tries the PR head branch first, then falls back to the base branch.
+ *
+ * @param octokit - Authenticated Octokit instance
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param headRef - The PR head branch ref (e.g., "feature-branch")
+ * @param baseRef - The PR base branch ref (e.g., "main")
+ * @returns LoadedConfig (defaults if config file not found)
+ */
+async function fetchRepoConfig(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  headRef: string,
+  baseRef: string
+): Promise<LoadedConfig> {
+  // Try to fetch from head branch first (allows PR to include config changes)
+  const refsToTry = [headRef, baseRef];
+
+  for (const ref of refsToTry) {
+    try {
+      console.log(`[Config] Attempting to fetch ${CONFIG_FILE_NAME} from ref: ${ref}`);
+      const response = await octokit.request("GET /repos/{owner}/{repo}/contents/{path}", {
+        owner,
+        repo,
+        path: CONFIG_FILE_NAME,
+        ref,
+      });
+
+      // GitHub returns base64-encoded content for files
+      const data = response.data as { content?: string; encoding?: string; type?: string };
+
+      if (data.type !== "file" || !data.content) {
+        console.log(`[Config] ${CONFIG_FILE_NAME} is not a file at ref ${ref}, trying next`);
+        continue;
+      }
+
+      // Decode base64 content
+      const content = Buffer.from(data.content, "base64").toString("utf-8");
+      console.log(`[Config] Successfully loaded ${CONFIG_FILE_NAME} from ref: ${ref}`);
+
+      return loadConfigFromString(content);
+    } catch (error) {
+      const err = error as { status?: number };
+      if (err.status === 404) {
+        console.log(`[Config] ${CONFIG_FILE_NAME} not found at ref: ${ref}`);
+        continue;
+      }
+      // Log other errors but don't fail - fall back to defaults
+      console.warn(`[Config] Error fetching ${CONFIG_FILE_NAME} from ref ${ref}:`, error);
+    }
+  }
+
+  console.log(`[Config] No ${CONFIG_FILE_NAME} found, using defaults`);
+  return createDefaultConfig();
 }
 
 // ============================================================================
@@ -112,7 +184,7 @@ function buildHighRiskCommentBody(params: {
   const { staticFindings, llmIssues, vibeScore, vibeLabel } = params;
 
   const highStatic = staticFindings.filter((f) => f.severity === "high");
-  const highLlm = llmIssues.filter((i) => i.severity === 3);
+  const highLlm = llmIssues.filter((i) => i.severity === "high");
 
   if (highStatic.length === 0 && highLlm.length === 0) {
     return null;
@@ -137,7 +209,8 @@ function buildHighRiskCommentBody(params: {
   if (highLlm.length) {
     body += `### 🤖 AI (LLM) high-risk findings\n\n`;
     highLlm.slice(0, 5).forEach((issue) => {
-      body += `- **(${issue.kind}) ${issue.title}** – ${issue.explanation}`;
+      const kindLabel = LLM_ISSUE_KIND_LABELS[issue.kind];
+      body += `- **(${kindLabel}) ${issue.title}** – ${issue.summary}`;
       if (issue.suggestedFix) {
         body += ` 💡 _Suggested fix:_ ${issue.suggestedFix}`;
       }
@@ -177,6 +250,166 @@ async function postHighRiskComment(params: {
 }
 
 // ============================================================================
+// Architecture Risk Summary
+// ============================================================================
+
+/**
+ * Categories for architecture risk summary.
+ */
+interface ArchitectureRiskSummary {
+  scaling: { count: number; kinds: string[] };
+  concurrency: { count: number; kinds: string[] };
+  errorHandling: { count: number; kinds: string[] };
+  dataIntegrity: { count: number; kinds: string[] };
+}
+
+/**
+ * Sets for categorizing findings by architecture risk area.
+ */
+const SCALING_KINDS = new Set([
+  "UNBOUNDED_QUERY",
+  "UNBOUNDED_COLLECTION_PROCESSING",
+  "MISSING_BATCHING",
+  "NO_CACHING",
+  "MEMORY_RISK",
+  "LOOPED_IO",
+]);
+
+const CONCURRENCY_KINDS = new Set([
+  "SHARED_FILE_WRITE",
+  "RETRY_STORM_RISK",
+  "BUSY_WAIT_OR_TIGHT_LOOP",
+  "CHECK_THEN_ACT_RACE",
+  "GLOBAL_MUTATION",
+  "CONCURRENCY_RISK",
+]);
+
+const ERROR_HANDLING_KINDS = new Set([
+  "UNSAFE_IO",
+  "SILENT_ERROR",
+  "MISSING_ERROR_HANDLING",
+  "ASYNC_MISUSE",
+]);
+
+const DATA_INTEGRITY_KINDS = new Set([
+  "UNVALIDATED_INPUT",
+  "DATA_SHAPE_ASSUMPTION",
+  "MIXED_RESPONSE_SHAPES",
+  "HIDDEN_ASSUMPTIONS",
+]);
+
+/**
+ * Compute an architecture risk summary from static findings and LLM issues.
+ * Groups findings into risk categories for cross-file analysis.
+ */
+function computeArchitectureRiskSummary(params: {
+  staticFindings: Finding[];
+  llmIssues: LlmIssue[];
+}): ArchitectureRiskSummary {
+  const { staticFindings, llmIssues } = params;
+
+  const summary: ArchitectureRiskSummary = {
+    scaling: { count: 0, kinds: [] },
+    concurrency: { count: 0, kinds: [] },
+    errorHandling: { count: 0, kinds: [] },
+    dataIntegrity: { count: 0, kinds: [] },
+  };
+
+  const scalingKindsFound = new Set<string>();
+  const concurrencyKindsFound = new Set<string>();
+  const errorHandlingKindsFound = new Set<string>();
+  const dataIntegrityKindsFound = new Set<string>();
+
+  // Categorize static findings
+  for (const f of staticFindings) {
+    if (SCALING_KINDS.has(f.kind)) {
+      summary.scaling.count++;
+      scalingKindsFound.add(f.kind);
+    } else if (CONCURRENCY_KINDS.has(f.kind)) {
+      summary.concurrency.count++;
+      concurrencyKindsFound.add(f.kind);
+    } else if (ERROR_HANDLING_KINDS.has(f.kind)) {
+      summary.errorHandling.count++;
+      errorHandlingKindsFound.add(f.kind);
+    } else if (DATA_INTEGRITY_KINDS.has(f.kind)) {
+      summary.dataIntegrity.count++;
+      dataIntegrityKindsFound.add(f.kind);
+    }
+  }
+
+  // Categorize LLM issues using the new simplified kind system
+  for (const issue of llmIssues) {
+    switch (issue.kind) {
+      case "SCALING_RISK":
+        summary.scaling.count++;
+        scalingKindsFound.add(issue.kind);
+        break;
+      case "CONCURRENCY_RISK":
+        summary.concurrency.count++;
+        concurrencyKindsFound.add(issue.kind);
+        break;
+      case "RESILIENCE_GAP":
+      case "OBSERVABILITY_GAP":
+        // Resilience and observability map to error handling
+        summary.errorHandling.count++;
+        errorHandlingKindsFound.add(issue.kind);
+        break;
+      case "DATA_CONTRACT_RISK":
+        summary.dataIntegrity.count++;
+        dataIntegrityKindsFound.add(issue.kind);
+        break;
+      case "ENVIRONMENT_ASSUMPTION":
+        // Environment assumptions often manifest as scaling issues
+        summary.scaling.count++;
+        scalingKindsFound.add(issue.kind);
+        break;
+    }
+  }
+
+  summary.scaling.kinds = Array.from(scalingKindsFound);
+  summary.concurrency.kinds = Array.from(concurrencyKindsFound);
+  summary.errorHandling.kinds = Array.from(errorHandlingKindsFound);
+  summary.dataIntegrity.kinds = Array.from(dataIntegrityKindsFound);
+
+  return summary;
+}
+
+/**
+ * Build a markdown section for the architecture risk summary.
+ */
+function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string {
+  let text = "## Architecture Risk Summary\n\n";
+  text += "Cross-file analysis of production risk patterns:\n\n";
+
+  const hasAnyRisks =
+    summary.scaling.count > 0 ||
+    summary.concurrency.count > 0 ||
+    summary.errorHandling.count > 0 ||
+    summary.dataIntegrity.count > 0;
+
+  if (!hasAnyRisks) {
+    text += "_No major architectural risk patterns detected across this PR._\n";
+    return text;
+  }
+
+  if (summary.scaling.count > 0) {
+    text += `| **Scaling** | ${summary.scaling.count} issue(s) | ${summary.scaling.kinds.join(", ")} |\n`;
+  }
+  if (summary.concurrency.count > 0) {
+    text += `| **Concurrency** | ${summary.concurrency.count} issue(s) | ${summary.concurrency.kinds.join(", ")} |\n`;
+  }
+  if (summary.errorHandling.count > 0) {
+    text += `| **Error Handling** | ${summary.errorHandling.count} issue(s) | ${summary.errorHandling.kinds.join(", ")} |\n`;
+  }
+  if (summary.dataIntegrity.count > 0) {
+    text += `| **Data Integrity** | ${summary.dataIntegrity.count} issue(s) | ${summary.dataIntegrity.kinds.join(", ")} |\n`;
+  }
+
+  text += "\n";
+  return text;
+}
+
+// ============================================================================
 // Event Handlers
 // ============================================================================
 
@@ -188,6 +421,8 @@ export function registerEventHandlers(): void {
     const owner = payload.repository.owner.login;
     const repo = payload.repository.name;
     const headSha = payload.pull_request.head.sha;
+    const headRef = payload.pull_request.head.ref;
+    const baseRef = payload.pull_request.base.ref;
     const pullNumber = payload.number;
     const action = payload.action;
 
@@ -204,6 +439,10 @@ export function registerEventHandlers(): void {
     try {
       const octokit = createInstallationOctokit(installationId);
 
+      // Fetch repository configuration (.vibescan.yml)
+      console.log(`[GitHub App] Fetching config for ${owner}/${repo}...`);
+      const vibescanConfig = await fetchRepoConfig(octokit, owner, repo, headRef, baseRef);
+
       // Fetch PR files with patches
       console.log(`[GitHub App] Fetching files for PR #${pullNumber}...`);
       const filesResponse = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/files", {
@@ -218,9 +457,8 @@ export function registerEventHandlers(): void {
         patch: f.patch,
       }));
 
-      // Run static analysis
       console.log(`[GitHub App] Analyzing ${prFiles.length} file(s)...`);
-      const staticFindings = analyzePullRequestPatches(prFiles);
+      const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, { config: vibescanConfig });
 
       // Compute static stats
       const totalFindings = staticFindings.length;
@@ -263,11 +501,12 @@ export function registerEventHandlers(): void {
         console.error("[LLM] Unexpected error during LLM analysis:", err);
       }
 
-      // Compute Vibe Score
+      // Compute Vibe Score with config
       const llmIssueCount = llmIssues.length;
       const vibeScoreResult: VibeScoreResult = computeVibeScore({
         staticFindings,
         llmIssues,
+        options: { scoringConfig: vibescanConfig.scoring },
       });
       const vibeScore = vibeScoreResult.score;
       const vibeLabel = vibeScoreResult.label;
@@ -307,20 +546,41 @@ export function registerEventHandlers(): void {
       text += "\n\n## AI (LLM) analysis findings\n\n";
 
       if (llmIssueCount) {
+        // Group issues by kind for better organization
+        const groupedIssues = groupIssuesByKind(llmIssues);
+        let issuesShown = 0;
         const maxLlmToShow = 10;
-        llmIssues.slice(0, maxLlmToShow).forEach((issue) => {
-          text += `- [${issue.severity}] (${issue.kind}) ${issue.title}: ${issue.explanation}`;
-          if (issue.suggestedFix) {
-            text += ` Suggested fix: ${issue.suggestedFix}`;
+
+        for (const [kind, issues] of groupedIssues) {
+          if (issuesShown >= maxLlmToShow) break;
+
+          const kindLabel = LLM_ISSUE_KIND_LABELS[kind];
+          text += `### ${kindLabel}\n\n`;
+
+          for (const issue of issues) {
+            if (issuesShown >= maxLlmToShow) break;
+
+            const severityBadge = issue.severity.toUpperCase();
+            text += `- [${severityBadge}] **${issue.title}**: ${issue.summary}`;
+            if (issue.suggestedFix) {
+              text += ` _Fix:_ ${issue.suggestedFix}`;
+            }
+            text += "\n";
+            issuesShown++;
           }
           text += "\n";
-        });
+        }
+
         if (llmIssueCount > maxLlmToShow) {
-          text += `\n_+ ${llmIssueCount - maxLlmToShow} more AI finding(s) not shown._\n`;
+          text += `_+ ${llmIssueCount - maxLlmToShow} more AI finding(s) not shown._\n`;
         }
       } else {
         text += "_No additional AI-identified issues beyond static analysis._\n";
       }
+
+      // Add architecture risk summary
+      const archSummary = computeArchitectureRiskSummary({ staticFindings, llmIssues });
+      text += "\n\n" + buildArchitectureRiskSection(archSummary);
 
       // Create check run
       await octokit.request("POST /repos/{owner}/{repo}/check-runs", {

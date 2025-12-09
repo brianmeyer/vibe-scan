@@ -1,0 +1,44 @@
+version: 1
+
+rules:
+  UNBOUNDED_QUERY:
+    enabled: true
+    level: error
+  TEMPORARY_HACK:
+    enabled: true
+    level: warning
+  CONSOLE_DEBUG:
+    enabled: false
+
+files:
+  ignore:
+    - "tests/**"
+    - "**/*.spec.ts"
+    - "scripts/migrations/**"
+  prototype_zone:
+    - "playground/**"
+    - "experiments/**"
+
+scoring:
+  high_risk_vibe_score: 60
+  weight_multiplier: 1.0
+
+llm:
+  enabled: true
+  max_model_tokens: 4096
+  temperature: 0.1
+  max_files: 50
+
+overrides:
+  - patterns:
+      - "src/infra/**"
+    rules:
+      NO_CACHING:
+        level: error
+  - patterns:
+      - "playground/**"
+    rules:
+      TEMPORARY_HACK:
+        level: info
+      UNBOUNDED_QUERY:
+        enabled: false

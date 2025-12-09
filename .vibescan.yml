@@ -1,0 +1,20 @@
+version: 1
+
+# Vibe Scan configuration for the Vibe Scan repo itself
+# The analyzer file contains pattern strings that would trigger false positives
+
+files:
+  ignore:
+    # Ignore test files
+    - "tests/**"
+    - "**/*.test.ts"
+    - "**/*.spec.ts"
+    # Ignore the analyzer itself - it contains detection patterns as strings
+    - "src/analyzer.ts"
+    # Ignore config examples in docs
+    - "**/*.md"
+
+rules:
+  # Console debugging is intentional in this codebase for logging
+  CONSOLE_DEBUG:
+    enabled: false
