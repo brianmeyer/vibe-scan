@@ -9,6 +9,7 @@ import {
   LlmIssue,
   LLM_ISSUE_KIND_LABELS,
   groupIssuesByKind,
+  StaticFindingSummary,
 } from "./llm";
 import { computeVibeScore, VibeScoreResult } from "./scoring";
 import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "./config/loadConfig";
@@ -470,6 +471,16 @@ export function registerEventHandlers(): void {
       const llmResults: LlmAnalysisResult[] = [];
       const llmIssues: LlmIssue[] = [];
 
+      // Build static findings summaries for LLM context
+      const staticFindingSummaries: StaticFindingSummary[] = staticFindings.map((f) => ({
+        ruleId: f.kind,
+        kind: f.kind,
+        file: f.file,
+        line: f.line ?? 0,
+        severity: f.severity === "high" ? "high" : f.severity === "medium" ? "medium" : "low",
+        summary: f.message,
+      }));
+
       try {
         const candidates = selectLlmCandidates(prFiles, staticFindings);
         if (!candidates.length) {
@@ -479,10 +490,14 @@ export function registerEventHandlers(): void {
         }
 
         for (const candidate of candidates) {
+          // Filter static findings to those relevant to this candidate file
+          const fileFindings = staticFindingSummaries.filter((f) => f.file === candidate.file);
+
           const result = await analyzeSnippetWithLlm({
             file: candidate.file,
             language: candidate.language,
             snippet: candidate.patch,
+            staticFindings: fileFindings,
           });
 
           if (!result) {

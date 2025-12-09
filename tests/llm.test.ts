@@ -10,6 +10,8 @@ import {
   LLM_ISSUE_KIND_LABELS,
   severityToNumber,
   groupIssuesByKind,
+  StaticFindingSummary,
+  buildVibePrompt,
 } from "../src/llm";
 
 describe("LLM Types", () => {
@@ -205,9 +207,6 @@ describe("LLM Response Parsing", () => {
 });
 
 describe("Prompt Content", () => {
-  // We can't easily test the prompt building function without exporting it,
-  // but we can verify the prompt contains all required kinds by reading the source
-
   it("should define all six issue kinds in the module", () => {
     // The VALID_KINDS array in the module should have all six
     const allKinds: LlmIssueKind[] = [
@@ -226,5 +225,172 @@ describe("Prompt Content", () => {
 
     // Verify we have exactly 6 kinds
     expect(Object.keys(LLM_ISSUE_KIND_LABELS)).toHaveLength(6);
+  });
+});
+
+describe("StaticFindingSummary", () => {
+  it("should allow creating a valid static finding summary", () => {
+    const summary: StaticFindingSummary = {
+      ruleId: "UNBOUNDED_QUERY",
+      kind: "UNBOUNDED_QUERY",
+      file: "src/api/users.ts",
+      line: 42,
+      severity: "high",
+      summary: "Database query has no LIMIT clause",
+    };
+
+    expect(summary.ruleId).toBe("UNBOUNDED_QUERY");
+    expect(summary.kind).toBe("UNBOUNDED_QUERY");
+    expect(summary.file).toBe("src/api/users.ts");
+    expect(summary.line).toBe(42);
+    expect(summary.severity).toBe("high");
+    expect(summary.summary).toBe("Database query has no LIMIT clause");
+  });
+
+  it("should allow all severity levels", () => {
+    const lowSeverity: StaticFindingSummary = {
+      ruleId: "CONSOLE_DEBUG",
+      kind: "CONSOLE_DEBUG",
+      file: "src/utils.ts",
+      line: 10,
+      severity: "low",
+      summary: "Console.log statement found",
+    };
+
+    const mediumSeverity: StaticFindingSummary = {
+      ruleId: "MISSING_TRY_CATCH",
+      kind: "MISSING_TRY_CATCH",
+      file: "src/api.ts",
+      line: 20,
+      severity: "medium",
+      summary: "Missing error handling",
+    };
+
+    const highSeverity: StaticFindingSummary = {
+      ruleId: "N_PLUS_ONE",
+      kind: "N_PLUS_ONE",
+      file: "src/db.ts",
+      line: 30,
+      severity: "high",
+      summary: "N+1 query pattern detected",
+    };
+
+    expect(lowSeverity.severity).toBe("low");
+    expect(mediumSeverity.severity).toBe("medium");
+    expect(highSeverity.severity).toBe("high");
+  });
+});
+
+describe("buildVibePrompt", () => {
+  it("should build a prompt without static findings", () => {
+    const prompt = buildVibePrompt({
+      file: "src/api/users.ts",
+      language: "TypeScript",
+      snippet: "const users = await db.users.findMany();",
+    });
+
+    expect(prompt).toContain("src/api/users.ts");
+    expect(prompt).toContain("TypeScript");
+    expect(prompt).toContain("const users = await db.users.findMany();");
+    expect(prompt).toContain("SCALING_RISK");
+    expect(prompt).toContain("CONCURRENCY_RISK");
+    expect(prompt).toContain("ENVIRONMENT_ASSUMPTION");
+    expect(prompt).toContain("DATA_CONTRACT_RISK");
+    expect(prompt).toContain("OBSERVABILITY_GAP");
+    expect(prompt).toContain("RESILIENCE_GAP");
+    // Should NOT contain static findings section when not provided
+    expect(prompt).not.toContain("static analysis findings that were already detected");
+  });
+
+  it("should include static findings in the prompt when provided", () => {
+    const staticFindings: StaticFindingSummary[] = [
+      {
+        ruleId: "UNBOUNDED_QUERY",
+        kind: "UNBOUNDED_QUERY",
+        file: "src/api/users.ts",
+        line: 10,
+        severity: "high",
+        summary: "Database query without LIMIT",
+      },
+      {
+        ruleId: "CONSOLE_DEBUG",
+        kind: "CONSOLE_DEBUG",
+        file: "src/api/users.ts",
+        line: 15,
+        severity: "low",
+        summary: "Console.log debugging statement",
+      },
+    ];
+
+    const prompt = buildVibePrompt({
+      file: "src/api/users.ts",
+      language: "TypeScript",
+      snippet: "const users = await db.users.findMany();\nconsole.log(users);",
+      staticFindings,
+    });
+
+    // Should contain the static findings section
+    expect(prompt).toContain("static analysis findings that were already detected");
+    // Should contain the rule IDs from the findings
+    expect(prompt).toContain("UNBOUNDED_QUERY");
+    expect(prompt).toContain("CONSOLE_DEBUG");
+    // Should contain the summaries
+    expect(prompt).toContain("Database query without LIMIT");
+    expect(prompt).toContain("Console.log debugging statement");
+    // Should still contain the LLM issue kinds
+    expect(prompt).toContain("SCALING_RISK");
+  });
+
+  it("should handle empty static findings array", () => {
+    const prompt = buildVibePrompt({
+      file: "src/api/users.ts",
+      snippet: "const x = 1;",
+      staticFindings: [],
+    });
+
+    // Should NOT contain static findings section when array is empty
+    expect(prompt).not.toContain("static analysis findings that were already detected");
+    // Should still work as a valid prompt
+    expect(prompt).toContain("src/api/users.ts");
+    expect(prompt).toContain("const x = 1;");
+  });
+
+  it("should cap static findings at 50 to avoid token explosion", () => {
+    // Create 60 findings
+    const manyFindings: StaticFindingSummary[] = [];
+    for (let i = 0; i < 60; i++) {
+      manyFindings.push({
+        ruleId: `RULE_${i}`,
+        kind: `RULE_${i}`,
+        file: "src/test.ts",
+        line: i + 1,
+        severity: "medium",
+        summary: `Finding number ${i}`,
+      });
+    }
+
+    const prompt = buildVibePrompt({
+      file: "src/test.ts",
+      snippet: "const x = 1;",
+      staticFindings: manyFindings,
+    });
+
+    // Should contain the first 50 findings
+    expect(prompt).toContain("RULE_0");
+    expect(prompt).toContain("RULE_49");
+    // Should NOT contain findings beyond 50
+    expect(prompt).not.toContain("RULE_50");
+    expect(prompt).not.toContain("RULE_59");
+  });
+
+  it("should include diff context when provided", () => {
+    const prompt = buildVibePrompt({
+      file: "src/api/users.ts",
+      snippet: "const users = await db.users.findMany();",
+      diffContext: "@@ -10,5 +10,7 @@\n+ const users = await db.users.findMany();",
+    });
+
+    expect(prompt).toContain("Diff context");
+    expect(prompt).toContain("@@ -10,5 +10,7 @@");
   });
 });
