@@ -11,7 +11,7 @@ import {
   groupIssuesByKind,
 } from "./llm";
 import { computeVibeScore, VibeScoreResult } from "./scoring";
-import { createDefaultConfig, LoadedConfig } from "./config/loadConfig";
+import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "./config/loadConfig";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",
@@ -30,6 +30,71 @@ function createInstallationOctokit(installationId: number): Octokit {
       installationId,
     },
   });
+}
+
+// ============================================================================
+// Config Fetching
+// ============================================================================
+
+const CONFIG_FILE_NAME = ".vibescan.yml";
+
+/**
+ * Fetch the .vibescan.yml configuration from a repository.
+ * Tries the PR head branch first, then falls back to the base branch.
+ *
+ * @param octokit - Authenticated Octokit instance
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param headRef - The PR head branch ref (e.g., "feature-branch")
+ * @param baseRef - The PR base branch ref (e.g., "main")
+ * @returns LoadedConfig (defaults if config file not found)
+ */
+async function fetchRepoConfig(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  headRef: string,
+  baseRef: string
+): Promise<LoadedConfig> {
+  // Try to fetch from head branch first (allows PR to include config changes)
+  const refsToTry = [headRef, baseRef];
+
+  for (const ref of refsToTry) {
+    try {
+      console.log(`[Config] Attempting to fetch ${CONFIG_FILE_NAME} from ref: ${ref}`);
+      const response = await octokit.request("GET /repos/{owner}/{repo}/contents/{path}", {
+        owner,
+        repo,
+        path: CONFIG_FILE_NAME,
+        ref,
+      });
+
+      // GitHub returns base64-encoded content for files
+      const data = response.data as { content?: string; encoding?: string; type?: string };
+
+      if (data.type !== "file" || !data.content) {
+        console.log(`[Config] ${CONFIG_FILE_NAME} is not a file at ref ${ref}, trying next`);
+        continue;
+      }
+
+      // Decode base64 content
+      const content = Buffer.from(data.content, "base64").toString("utf-8");
+      console.log(`[Config] Successfully loaded ${CONFIG_FILE_NAME} from ref: ${ref}`);
+
+      return loadConfigFromString(content);
+    } catch (error) {
+      const err = error as { status?: number };
+      if (err.status === 404) {
+        console.log(`[Config] ${CONFIG_FILE_NAME} not found at ref: ${ref}`);
+        continue;
+      }
+      // Log other errors but don't fail - fall back to defaults
+      console.warn(`[Config] Error fetching ${CONFIG_FILE_NAME} from ref ${ref}:`, error);
+    }
+  }
+
+  console.log(`[Config] No ${CONFIG_FILE_NAME} found, using defaults`);
+  return createDefaultConfig();
 }
 
 // ============================================================================
@@ -356,6 +421,8 @@ export function registerEventHandlers(): void {
     const owner = payload.repository.owner.login;
     const repo = payload.repository.name;
     const headSha = payload.pull_request.head.sha;
+    const headRef = payload.pull_request.head.ref;
+    const baseRef = payload.pull_request.base.ref;
     const pullNumber = payload.number;
     const action = payload.action;
 
@@ -372,6 +439,10 @@ export function registerEventHandlers(): void {
     try {
       const octokit = createInstallationOctokit(installationId);
 
+      // Fetch repository configuration (.vibescan.yml)
+      console.log(`[GitHub App] Fetching config for ${owner}/${repo}...`);
+      const vibescanConfig = await fetchRepoConfig(octokit, owner, repo, headRef, baseRef);
+
       // Fetch PR files with patches
       console.log(`[GitHub App] Fetching files for PR #${pullNumber}...`);
       const filesResponse = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/files", {
@@ -385,10 +456,6 @@ export function registerEventHandlers(): void {
         filename: f.filename,
         patch: f.patch,
       }));
-
-      // Run static analysis with config support
-      // TODO: In the future, fetch .vibescan.yml from the repo and use loadConfig
-      const vibescanConfig: LoadedConfig = createDefaultConfig();
 
       console.log(`[GitHub App] Analyzing ${prFiles.length} file(s)...`);
       const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, { config: vibescanConfig });
