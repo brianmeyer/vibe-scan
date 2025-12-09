@@ -21,6 +21,7 @@ export type RuleId =
   | "NO_CACHING"
   | "MEMORY_RISK"
   | "LOOPED_IO"
+  | "BLOCKING_OPERATION"
   // Concurrency rules
   | "SHARED_FILE_WRITE"
   | "RETRY_STORM_RISK"
@@ -31,6 +32,7 @@ export type RuleId =
   | "UNVALIDATED_INPUT"
   | "DATA_SHAPE_ASSUMPTION"
   | "MIXED_RESPONSE_SHAPES"
+  | "HARDCODED_SECRET"
   // Code quality rules
   | "TEMPORARY_HACK"
   | "CONSOLE_DEBUG";
@@ -87,6 +89,7 @@ export const DEFAULT_RULE_CONFIG: Record<RuleId, RequiredRuleConfig> = {
   NO_CACHING: { enabled: true, level: "warning" },
   MEMORY_RISK: { enabled: true, level: "error" },
   LOOPED_IO: { enabled: true, level: "error" },
+  BLOCKING_OPERATION: { enabled: true, level: "warning" },
 
   // Concurrency rules - high severity
   SHARED_FILE_WRITE: { enabled: true, level: "error" },
@@ -99,6 +102,7 @@ export const DEFAULT_RULE_CONFIG: Record<RuleId, RequiredRuleConfig> = {
   UNVALIDATED_INPUT: { enabled: true, level: "warning" },
   DATA_SHAPE_ASSUMPTION: { enabled: true, level: "warning" },
   MIXED_RESPONSE_SHAPES: { enabled: true, level: "warning" },
+  HARDCODED_SECRET: { enabled: true, level: "error" },
 
   // Code quality rules - lower severity
   TEMPORARY_HACK: { enabled: true, level: "warning" },
@@ -128,6 +132,7 @@ export const RULE_CATEGORIES = {
     "NO_CACHING",
     "MEMORY_RISK",
     "LOOPED_IO",
+    "BLOCKING_OPERATION",
   ] as RuleId[],
   concurrency: [
     "SHARED_FILE_WRITE",
@@ -141,5 +146,6 @@ export const RULE_CATEGORIES = {
     "UNVALIDATED_INPUT",
     "DATA_SHAPE_ASSUMPTION",
     "MIXED_RESPONSE_SHAPES",
+    "HARDCODED_SECRET",
   ] as RuleId[],
 } as const;

@@ -52,6 +52,8 @@ import {
   TIGHT_LOOP_PATTERNS,
   CHECK_PATTERNS,
   MEMORY_RISK_PATTERNS,
+  SECRET_PATTERNS,
+  BLOCKING_PATTERNS,
   matchesAnyPattern,
 } from "./patterns";
 
@@ -535,6 +537,40 @@ export function analyzePatch(file: string, patch: string): Finding[] {
             kind: "CHECK_THEN_ACT_RACE",
             message:
               "Find-then-create pattern detected. This can race under concurrent requests, causing duplicate inserts or errors. Consider upsert or database-level constraints.",
+            snippet: trimmedContent.slice(0, 100),
+          });
+        }
+      }
+
+      // ========================================
+      // s) HARDCODED_SECRET detection
+      // ========================================
+      const hasSecretPattern = matchesAnyPattern(content, SECRET_PATTERNS);
+      if (hasSecretPattern) {
+        findings.push({
+          file,
+          line: currentLine,
+          severity: "high",
+          kind: "HARDCODED_SECRET",
+          message:
+            "Hardcoded secret or credential detected. Secrets should be stored in environment variables or a secrets manager, never in source code.",
+          snippet: trimmedContent.slice(0, 100),
+        });
+      }
+
+      // ========================================
+      // t) BLOCKING_OPERATION detection (skip test files)
+      // ========================================
+      if (!isTestFile(file)) {
+        const hasBlockingPattern = matchesAnyPattern(content, BLOCKING_PATTERNS);
+        if (hasBlockingPattern) {
+          findings.push({
+            file,
+            line: currentLine,
+            severity: "medium",
+            kind: "BLOCKING_OPERATION",
+            message:
+              "Synchronous blocking operation detected. This blocks the event loop and can cause performance issues under load. Consider using async alternatives.",
             snippet: trimmedContent.slice(0, 100),
           });
         }
