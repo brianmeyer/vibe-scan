@@ -104,7 +104,8 @@ export class PythonAnalyzer implements LanguageAnalyzer {
 
   constructor() {
     this.parser = new Parser();
-    this.parser.setLanguage(Python as unknown as Parser.Language);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.parser.setLanguage(Python as any);
   }
 
   canAnalyze(filePath: string): boolean {
