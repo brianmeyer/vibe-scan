@@ -208,6 +208,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // Start server - bind to 0.0.0.0 for Railway/Docker
+console.log(`[Server] Starting on 0.0.0.0:${port} (PORT env: ${process.env.PORT})`);
 server = app.listen(port, "0.0.0.0", () => {
-  logger.info("Server started", { port, host: "0.0.0.0" });
+  console.log(`[Server] Listening on 0.0.0.0:${port}`);
 });
