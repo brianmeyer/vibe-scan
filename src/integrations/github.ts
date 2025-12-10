@@ -2,7 +2,12 @@ import { Webhooks } from "@octokit/webhooks";
 import { Octokit } from "octokit";
 import { createAppAuth } from "@octokit/auth-app";
 import { config } from "../env";
-import { analyzePullRequestPatchesWithConfig, Finding } from "../analysis/analyzer";
+import {
+  analyzePullRequestPatchesWithConfig,
+  Finding,
+  analyzeRepository,
+  BaselineAnalysisResult,
+} from "../analysis/analyzer";
 import {
   analyzeSnippetWithLlm,
   LlmAnalysisResult,
@@ -803,5 +808,288 @@ export function registerEventHandlers(): void {
     console.log(`[GitHub App] Received ${name} event (id: ${id}):`, payload.action);
   });
 
+  // ============================================================================
+  // Phase 2: Installation Baseline Scan
+  // ============================================================================
+
+  webhooks.on("installation.created", async ({ id, name, payload }) => {
+    console.log(`[GitHub App] Received ${name} event (id: ${id}): App installed on ${payload.repositories?.length ?? 0} repository(ies)`);
+
+    const installationId = payload.installation.id;
+    const repositories = payload.repositories ?? [];
+
+    // Get owner from account (handle both user and org)
+    const account = payload.installation.account;
+    const owner = account && "login" in account ? account.login : null;
+
+    if (!owner) {
+      console.warn("[GitHub App] Could not determine owner, skipping baseline scan");
+      return;
+    }
+
+    if (!repositories.length) {
+      console.log("[GitHub App] No repositories in installation event, skipping baseline scan");
+      return;
+    }
+
+    // Process each repository
+    for (const repo of repositories) {
+      try {
+        await performBaselineScan({
+          installationId,
+          owner,
+          repoName: repo.name,
+          repoFullName: repo.full_name,
+        });
+      } catch (error) {
+        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error);
+      }
+    }
+  });
+
+  // Handle when repos are added to existing installation
+  webhooks.on("installation_repositories.added", async ({ id, name, payload }) => {
+    console.log(`[GitHub App] Received ${name} event (id: ${id}): ${payload.repositories_added?.length ?? 0} repository(ies) added`);
+
+    const installationId = payload.installation.id;
+    const repositories = payload.repositories_added ?? [];
+
+    const account = payload.installation.account;
+    const owner = account && "login" in account ? account.login : null;
+
+    if (!owner) {
+      console.warn("[GitHub App] Could not determine owner, skipping baseline scan");
+      return;
+    }
+
+    for (const repo of repositories) {
+      try {
+        await performBaselineScan({
+          installationId,
+          owner,
+          repoName: repo.name,
+          repoFullName: repo.full_name,
+        });
+      } catch (error) {
+        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error);
+      }
+    }
+  });
+
   console.log("[GitHub App] Event handlers registered");
+}
+
+// ============================================================================
+// Baseline Scan Implementation
+// ============================================================================
+
+const BASELINE_MAX_FILE_SIZE = 100 * 1024; // 100KB
+const BASELINE_MAX_FILES = 200;
+
+interface BaselineScanParams {
+  installationId: number;
+  owner: string;
+  repoName: string;
+  repoFullName: string;
+}
+
+/**
+ * Perform baseline scan on a repository when the app is installed.
+ * Creates an issue with the Vibe Score and findings.
+ */
+async function performBaselineScan(params: BaselineScanParams): Promise<void> {
+  const { installationId, owner, repoName, repoFullName } = params;
+
+  console.log(`[Baseline] Starting baseline scan for ${repoFullName}...`);
+
+  const octokit = createInstallationOctokit(installationId);
+
+  // Get default branch
+  const repoInfo = await octokit.request("GET /repos/{owner}/{repo}", {
+    owner,
+    repo: repoName,
+  });
+  const defaultBranch = repoInfo.data.default_branch;
+  console.log(`[Baseline] Default branch: ${defaultBranch}`);
+
+  // Fetch config
+  const vibescanConfig = await fetchRepoConfig(octokit, owner, repoName, defaultBranch, defaultBranch);
+
+  // Get file tree
+  const treeResponse = await octokit.request("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", {
+    owner,
+    repo: repoName,
+    tree_sha: defaultBranch,
+    recursive: "true",
+  });
+
+  // Filter to code files
+  const codeFileExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rb", ".java", ".cs"]);
+  const codeFiles = treeResponse.data.tree.filter((item: { type?: string; path?: string; size?: number }) => {
+    if (item.type !== "blob") return false;
+    if (!item.path) return false;
+    const ext = item.path.substring(item.path.lastIndexOf("."));
+    if (!codeFileExtensions.has(ext)) return false;
+    // Skip test files
+    if (item.path.includes("/test/") || item.path.includes("/tests/") || item.path.includes("__tests__")) return false;
+    if (item.path.includes(".test.") || item.path.includes(".spec.") || item.path.includes("_test.")) return false;
+    // Skip vendor/node_modules
+    if (item.path.includes("node_modules/") || item.path.includes("vendor/") || item.path.includes("dist/")) return false;
+    if (item.size && item.size > BASELINE_MAX_FILE_SIZE) return false;
+    return true;
+  });
+
+  console.log(`[Baseline] Found ${codeFiles.length} code files (excluding tests)`);
+
+  // Limit files
+  const filesToAnalyze = codeFiles.slice(0, BASELINE_MAX_FILES);
+
+  // Fetch file contents with batching
+  const fileContents = new Map<string, string>();
+  const batchSize = 10;
+
+  for (let i = 0; i < filesToAnalyze.length; i += batchSize) {
+    const batch = filesToAnalyze.slice(i, i + batchSize);
+    const promises = batch.map(async (file: { path?: string }) => {
+      if (!file.path) return;
+      try {
+        const content = await fetchFileContent(octokit, owner, repoName, file.path, defaultBranch);
+        if (content) {
+          fileContents.set(file.path, content);
+        }
+      } catch (err) {
+        console.warn(`[Baseline] Failed to fetch ${file.path}:`, err);
+      }
+    });
+    await Promise.all(promises);
+  }
+
+  console.log(`[Baseline] Fetched ${fileContents.size}/${filesToAnalyze.length} file(s)`);
+
+  // Run analysis
+  const baselineResult: BaselineAnalysisResult = analyzeRepository(fileContents, {
+    config: vibescanConfig,
+  });
+
+  console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
+
+  // Compute Vibe Score
+  const vibeScoreResult = computeVibeScore({
+    staticFindings: baselineResult.findings,
+    llmIssues: [],
+    options: { scoringConfig: vibescanConfig.scoring },
+  });
+
+  // Create issue
+  const issueBody = buildBaselineIssueBody({
+    vibeScore: vibeScoreResult.score,
+    vibeLabel: vibeScoreResult.label,
+    findings: baselineResult.findings,
+    filesAnalyzed: baselineResult.filesAnalyzed,
+    filesSkipped: baselineResult.filesSkipped,
+    truncated: baselineResult.truncated,
+    totalCodeFiles: codeFiles.length,
+  });
+
+  await octokit.request("POST /repos/{owner}/{repo}/issues", {
+    owner,
+    repo: repoName,
+    title: `Vibe Scan Baseline: Score ${vibeScoreResult.score}/100 (${vibeScoreResult.label})`,
+    body: issueBody,
+    labels: ["vibe-scan", "baseline"],
+  });
+
+  console.log(`[Baseline] Created baseline issue for ${repoFullName}`);
+}
+
+/**
+ * Build markdown body for baseline scan issue.
+ */
+function buildBaselineIssueBody(params: {
+  vibeScore: number;
+  vibeLabel: string;
+  findings: Finding[];
+  filesAnalyzed: number;
+  filesSkipped: number;
+  truncated: boolean;
+  totalCodeFiles: number;
+}): string {
+  const { vibeScore, vibeLabel, findings, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
+
+  let body = `# Vibe Scan Baseline Report\n\n`;
+  body += `Welcome to Vibe Scan! This is your baseline production readiness assessment.\n\n`;
+
+  // Score
+  body += `## Vibe Score: **${vibeScore}/100** (${vibeLabel})\n\n`;
+
+  if (vibeScore >= 90) {
+    body += `Excellent! Your codebase looks production-ready.\n\n`;
+  } else if (vibeScore >= 75) {
+    body += `Good! Minor improvements recommended before scaling.\n\n`;
+  } else if (vibeScore >= 60) {
+    body += `Moderate Risk - Several issues should be addressed before production.\n\n`;
+  } else if (vibeScore >= 40) {
+    body += `Risky - Significant concerns that could cause production failures.\n\n`;
+  } else {
+    body += `Critical Risk - Major architectural issues detected. Not recommended for production.\n\n`;
+  }
+
+  // Stats
+  body += `### Analysis Stats\n`;
+  body += `- **Files Analyzed:** ${filesAnalyzed} of ${totalCodeFiles}\n`;
+  if (filesSkipped > 0) {
+    body += `- **Files Skipped:** ${filesSkipped}\n`;
+  }
+  if (truncated) {
+    body += `- *Analysis was truncated at ${filesAnalyzed} files*\n`;
+  }
+  body += `- **Issues Found:** ${findings.length}\n\n`;
+
+  // Findings summary
+  if (findings.length > 0) {
+    const high = findings.filter((f) => f.severity === "high");
+    const medium = findings.filter((f) => f.severity === "medium");
+    const low = findings.filter((f) => f.severity === "low");
+
+    body += `## Findings Summary\n\n`;
+    body += `| Severity | Count |\n|----------|-------|\n`;
+    body += `| High | ${high.length} |\n`;
+    body += `| Medium | ${medium.length} |\n`;
+    body += `| Low | ${low.length} |\n\n`;
+
+    // High severity details
+    if (high.length > 0) {
+      body += `### High Severity Issues\n\n`;
+
+      const byKind = new Map<string, Finding[]>();
+      for (const f of high) {
+        if (!byKind.has(f.kind)) byKind.set(f.kind, []);
+        byKind.get(f.kind)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        body += `**${kind}** (${kindFindings.length})\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+  } else {
+    body += `## No Issues Found\n\nNo critical production risks were detected.\n\n`;
+  }
+
+  // Next steps
+  body += `## Next Steps\n\n`;
+  body += `1. Review the findings above and prioritize high-severity issues\n`;
+  body += `2. Configure Vibe Scan by adding a \`.vibescan.yml\` file\n`;
+  body += `3. PRs will be analyzed automatically\n\n`;
+
+  body += `---\n_Baseline scan from Vibe Scan installation._\n`;
+
+  return body;
 }
