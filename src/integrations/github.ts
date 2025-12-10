@@ -113,6 +113,29 @@ async function fetchRepoConfig(
 /** Maximum file size to fetch for LLM analysis (50KB) */
 const MAX_FILE_SIZE_BYTES = 50 * 1024;
 
+/** Extensions we consider "code" worth analyzing */
+const CODE_FILE_EXTENSIONS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".py", ".pyw",
+  ".go",
+  ".rb", ".rake",
+  ".java", ".kt", ".scala",
+  ".cs", ".fs",
+  ".rs",
+  ".c", ".cpp", ".cc", ".h", ".hpp",
+  ".php",
+  ".swift",
+  ".vue", ".svelte",
+]);
+
+/**
+ * Check if a file is a code file worth analyzing.
+ */
+function isCodeFile(filename: string): boolean {
+  const ext = filename.substring(filename.lastIndexOf(".")).toLowerCase();
+  return CODE_FILE_EXTENSIONS.has(ext);
+}
+
 /**
  * Fetch the raw content of a file from the repository at a specific ref.
  * Enforces a size limit to prevent memory issues with large files.
@@ -666,6 +689,25 @@ export function registerEventHandlers(): void {
         filename: f.filename,
         patch: f.patch,
       }));
+
+      // Early exit: skip analysis if no code files changed (e.g., README-only PRs)
+      const codeFiles = prFiles.filter((f) => isCodeFile(f.filename));
+      if (codeFiles.length === 0) {
+        console.log(`[GitHub App] No code files in PR, skipping analysis (${prFiles.length} non-code file(s))`);
+        await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
+          owner,
+          repo,
+          name: "Vibe Scan",
+          head_sha: headSha,
+          status: "completed",
+          conclusion: "neutral",
+          output: {
+            title: "No code changes to analyze",
+            summary: "This PR only contains non-code files (docs, config, etc.). Vibe Scan skipped.",
+          },
+        });
+        return;
+      }
 
       // Fetch file contents for AST analysis (parallel fetch for efficiency)
       console.log(`[GitHub App] Fetching file contents for AST analysis...`);

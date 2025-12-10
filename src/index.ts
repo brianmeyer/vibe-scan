@@ -102,23 +102,31 @@ app.get("/", (_req: Request, res: Response) => {
   });
 });
 
-// Webhook endpoint
+// Webhook endpoint - responds immediately, processes async
 app.post("/webhook", bodyParser.raw({ type: "*/*" }), async (req: Request, res: Response) => {
+  const payload = req.body instanceof Buffer ? req.body.toString("utf8") : req.body;
+  const signature = req.headers["x-hub-signature-256"] as string;
+  const id = req.headers["x-github-delivery"] as string;
+  const name = req.headers["x-github-event"] as string;
+
+  // Verify signature synchronously before responding
   try {
-    const payload = req.body instanceof Buffer ? req.body.toString("utf8") : req.body;
-
-    await webhooks.verifyAndReceive({
-      id: req.headers["x-github-delivery"] as string,
-      name: req.headers["x-github-event"] as string,
-      signature: req.headers["x-hub-signature-256"] as string,
-      payload: payload,
-    });
-
-    res.status(200).json({ ok: true });
+    await webhooks.verify(payload, signature);
   } catch (err) {
-    console.error("[Webhook] Verification failed:", err instanceof Error ? err.message : err);
+    console.error("[Webhook] Signature verification failed:", err instanceof Error ? err.message : err);
     res.status(401).json({ error: "Invalid signature" });
+    return;
   }
+
+  // Respond immediately - GitHub expects response within 10 seconds
+  res.status(200).json({ ok: true });
+
+  // Process webhook in background (fire and forget)
+  // Errors are caught by the unhandledRejection handler
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  webhooks.receive({ id, name: name as any, payload }).catch((err) => {
+    console.error("[Webhook] Handler error:", err instanceof Error ? err.message : err);
+  });
 });
 
 // Graceful shutdown handler
