@@ -905,102 +905,109 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
 
   const octokit = createInstallationOctokit(installationId);
 
-  // Get default branch
-  const repoInfo = await octokit.request("GET /repos/{owner}/{repo}", {
-    owner,
-    repo: repoName,
-  });
-  const defaultBranch = repoInfo.data.default_branch;
-  console.log(`[Baseline] Default branch: ${defaultBranch}`);
-
-  // Fetch config
-  const vibescanConfig = await fetchRepoConfig(octokit, owner, repoName, defaultBranch, defaultBranch);
-
-  // Get file tree
-  const treeResponse = await octokit.request("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", {
-    owner,
-    repo: repoName,
-    tree_sha: defaultBranch,
-    recursive: "true",
-  });
-
-  // Filter to code files
-  const codeFileExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rb", ".java", ".cs"]);
-  const codeFiles = treeResponse.data.tree.filter((item: { type?: string; path?: string; size?: number }) => {
-    if (item.type !== "blob") return false;
-    if (!item.path) return false;
-    const ext = item.path.substring(item.path.lastIndexOf("."));
-    if (!codeFileExtensions.has(ext)) return false;
-    // Skip test files
-    if (item.path.includes("/test/") || item.path.includes("/tests/") || item.path.includes("__tests__")) return false;
-    if (item.path.includes(".test.") || item.path.includes(".spec.") || item.path.includes("_test.")) return false;
-    // Skip vendor/node_modules
-    if (item.path.includes("node_modules/") || item.path.includes("vendor/") || item.path.includes("dist/")) return false;
-    if (item.size && item.size > BASELINE_MAX_FILE_SIZE) return false;
-    return true;
-  });
-
-  console.log(`[Baseline] Found ${codeFiles.length} code files (excluding tests)`);
-
-  // Limit files
-  const filesToAnalyze = codeFiles.slice(0, BASELINE_MAX_FILES);
-
-  // Fetch file contents with batching
-  const fileContents = new Map<string, string>();
-  const batchSize = 10;
-
-  for (let i = 0; i < filesToAnalyze.length; i += batchSize) {
-    const batch = filesToAnalyze.slice(i, i + batchSize);
-    const promises = batch.map(async (file: { path?: string }) => {
-      if (!file.path) return;
-      try {
-        const content = await fetchFileContent(octokit, owner, repoName, file.path, defaultBranch);
-        if (content) {
-          fileContents.set(file.path, content);
-        }
-      } catch (err) {
-        console.warn(`[Baseline] Failed to fetch ${file.path}:`, err);
-      }
+  try {
+    // Get default branch
+    const repoInfo = await octokit.request("GET /repos/{owner}/{repo}", {
+      owner,
+      repo: repoName,
     });
-    await Promise.all(promises);
+    const defaultBranch = repoInfo.data.default_branch;
+    console.log(`[Baseline] Default branch: ${defaultBranch}`);
+
+    // Fetch config
+    const vibescanConfig = await fetchRepoConfig(octokit, owner, repoName, defaultBranch, defaultBranch);
+
+    // Get file tree
+    const treeResponse = await octokit.request("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", {
+      owner,
+      repo: repoName,
+      tree_sha: defaultBranch,
+      recursive: "true",
+    });
+
+    // Filter to code files
+    const codeFileExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rb", ".java", ".cs"]);
+    const codeFiles = treeResponse.data.tree.filter((item: { type?: string; path?: string; size?: number }) => {
+      if (item.type !== "blob") return false;
+      if (!item.path) return false;
+      const ext = item.path.substring(item.path.lastIndexOf("."));
+      if (!codeFileExtensions.has(ext)) return false;
+      // Skip test files
+      if (item.path.includes("/test/") || item.path.includes("/tests/") || item.path.includes("__tests__")) return false;
+      if (item.path.includes(".test.") || item.path.includes(".spec.") || item.path.includes("_test.")) return false;
+      // Skip vendor/node_modules
+      if (item.path.includes("node_modules/") || item.path.includes("vendor/") || item.path.includes("dist/")) return false;
+      if (item.size && item.size > BASELINE_MAX_FILE_SIZE) return false;
+      return true;
+    });
+
+    console.log(`[Baseline] Found ${codeFiles.length} code files (excluding tests)`);
+
+    // Limit files
+    const filesToAnalyze = codeFiles.slice(0, BASELINE_MAX_FILES);
+
+    // Fetch file contents with batching (intentional loop pattern for rate limiting)
+    // vibescan-ignore-next-line LOOPED_IO
+    const fileContents = new Map<string, string>();
+    const batchSize = 10;
+
+    for (let i = 0; i < filesToAnalyze.length; i += batchSize) {
+      const batch = filesToAnalyze.slice(i, i + batchSize);
+      const promises = batch.map(async (file: { path?: string }) => {
+        if (!file.path) return;
+        try {
+          const content = await fetchFileContent(octokit, owner, repoName, file.path, defaultBranch);
+          if (content) {
+            fileContents.set(file.path, content);
+          }
+        } catch (err) {
+          // Individual file failures shouldn't stop the scan
+          console.warn(`[Baseline] Failed to fetch ${file.path}:`, err);
+        }
+      });
+      await Promise.all(promises);
+    }
+
+    console.log(`[Baseline] Fetched ${fileContents.size}/${filesToAnalyze.length} file(s)`);
+
+    // Run analysis
+    const baselineResult: BaselineAnalysisResult = analyzeRepository(fileContents, {
+      config: vibescanConfig,
+    });
+
+    console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
+
+    // Compute Vibe Score
+    const vibeScoreResult = computeVibeScore({
+      staticFindings: baselineResult.findings,
+      llmIssues: [],
+      options: { scoringConfig: vibescanConfig.scoring },
+    });
+
+    // Create issue
+    const issueBody = buildBaselineIssueBody({
+      vibeScore: vibeScoreResult.score,
+      vibeLabel: vibeScoreResult.label,
+      findings: baselineResult.findings,
+      filesAnalyzed: baselineResult.filesAnalyzed,
+      filesSkipped: baselineResult.filesSkipped,
+      truncated: baselineResult.truncated,
+      totalCodeFiles: codeFiles.length,
+    });
+
+    await octokit.request("POST /repos/{owner}/{repo}/issues", {
+      owner,
+      repo: repoName,
+      title: `Vibe Scan Baseline: Score ${vibeScoreResult.score}/100 (${vibeScoreResult.label})`,
+      body: issueBody,
+      labels: ["vibe-scan", "baseline"],
+    });
+
+    console.log(`[Baseline] Created baseline issue for ${repoFullName}`);
+  } catch (error) {
+    console.error(`[Baseline] Error scanning ${repoFullName}:`, error);
+    throw error; // Re-throw so caller knows it failed
   }
-
-  console.log(`[Baseline] Fetched ${fileContents.size}/${filesToAnalyze.length} file(s)`);
-
-  // Run analysis
-  const baselineResult: BaselineAnalysisResult = analyzeRepository(fileContents, {
-    config: vibescanConfig,
-  });
-
-  console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
-
-  // Compute Vibe Score
-  const vibeScoreResult = computeVibeScore({
-    staticFindings: baselineResult.findings,
-    llmIssues: [],
-    options: { scoringConfig: vibescanConfig.scoring },
-  });
-
-  // Create issue
-  const issueBody = buildBaselineIssueBody({
-    vibeScore: vibeScoreResult.score,
-    vibeLabel: vibeScoreResult.label,
-    findings: baselineResult.findings,
-    filesAnalyzed: baselineResult.filesAnalyzed,
-    filesSkipped: baselineResult.filesSkipped,
-    truncated: baselineResult.truncated,
-    totalCodeFiles: codeFiles.length,
-  });
-
-  await octokit.request("POST /repos/{owner}/{repo}/issues", {
-    owner,
-    repo: repoName,
-    title: `Vibe Scan Baseline: Score ${vibeScoreResult.score}/100 (${vibeScoreResult.label})`,
-    body: issueBody,
-    labels: ["vibe-scan", "baseline"],
-  });
-
-  console.log(`[Baseline] Created baseline issue for ${repoFullName}`);
 }
 
 /**
