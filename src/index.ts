@@ -15,6 +15,10 @@ if (!config.REDIS_URL) {
 const app = express();
 const port = Number(config.PORT) || 3000;
 
+// Trust proxy - required for Railway/cloud deployments behind load balancers
+// This enables correct client IP detection for rate limiting
+app.set("trust proxy", 1);
+
 // Track server state for graceful shutdown
 // vibescan-ignore-next-line GLOBAL_MUTATION
 let isShuttingDown = false;
