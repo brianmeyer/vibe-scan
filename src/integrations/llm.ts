@@ -448,8 +448,10 @@ export async function analyzeSnippetWithLlm(params: {
       const jsonStr = jsonMatch ? jsonMatch[0] : content;
       parsed = JSON.parse(jsonStr);
     } catch (parseError) {
-      console.error("[LLM] Failed to parse JSON response:", parseError);
-      console.error("[LLM] Raw response:", content);
+      console.error("[LLM] Failed to parse JSON response:", parseError instanceof Error ? parseError.message : "unknown");
+      // Truncate response to avoid logging potentially echoed secrets
+      const truncated = content.length > 200 ? content.slice(0, 200) + "...[truncated]" : content;
+      console.error("[LLM] Raw response (truncated):", truncated);
       return {
         issues: [],
         architectureSummary: undefined,
@@ -459,7 +461,7 @@ export async function analyzeSnippetWithLlm(params: {
     // Validate and normalize the response
     return validateAndNormalize(parsed, params.file);
   } catch (error) {
-    console.error("[LLM] API call failed:", error);
+    console.error("[LLM] API call failed:", error instanceof Error ? error.message : "unknown error");
     return null;
   }
 }
