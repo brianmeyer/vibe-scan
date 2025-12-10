@@ -207,7 +207,7 @@ process.on("unhandledRejection", (reason) => {
   });
 });
 
-// Start server
-server = app.listen(port, () => {
-  logger.info("Server started", { port, healthCheck: `http://localhost:${port}/health` });
+// Start server - bind to 0.0.0.0 for Railway/Docker
+server = app.listen(port, "0.0.0.0", () => {
+  logger.info("Server started", { port, host: "0.0.0.0" });
 });
