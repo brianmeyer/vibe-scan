@@ -28,6 +28,10 @@
  * - RETRY_STORM_RISK: retry loops without exponential backoff/jitter
  * - BUSY_WAIT_OR_TIGHT_LOOP: tight loops without delay (CPU spinning)
  * - CHECK_THEN_ACT_RACE: find-then-create patterns that can race
+ *
+ * Architecture Rule Kinds (Horizontal Scaling Killers):
+ * - STATEFUL_SERVICE: in-memory storage (Map, Set, arrays) that breaks horizontal scaling
+ * - PROTOTYPE_INFRA: "toy" infrastructure (SQLite, file-based DB) that won't work in cloud
  */
 
 import { RuleId, RuleLevel, isValidRuleId } from "./rules";
@@ -64,6 +68,8 @@ import {
   MEMORY_RISK_PATTERNS,
   SECRET_PATTERNS,
   BLOCKING_PATTERNS,
+  STATEFUL_SERVICE_PATTERNS,
+  PROTOTYPE_INFRA_PATTERNS,
   matchesAnyPattern,
 } from "./patterns";
 
@@ -584,6 +590,38 @@ export function analyzePatch(file: string, patch: string): Finding[] {
             snippet: trimmedContent.slice(0, 100),
           });
         }
+      }
+
+      // ========================================
+      // u) STATEFUL_SERVICE detection
+      // ========================================
+      const hasStatefulServicePattern = matchesAnyPattern(content, STATEFUL_SERVICE_PATTERNS);
+      if (hasStatefulServicePattern) {
+        findings.push({
+          file,
+          line: currentLine,
+          severity: "high",
+          kind: "STATEFUL_SERVICE",
+          message:
+            "In-memory state storage detected. This prevents horizontal scaling - each instance has separate state. Use Redis, database, or external cache instead.",
+          snippet: trimmedContent.slice(0, 100),
+        });
+      }
+
+      // ========================================
+      // v) PROTOTYPE_INFRA detection
+      // ========================================
+      const hasPrototypeInfraPattern = matchesAnyPattern(content, PROTOTYPE_INFRA_PATTERNS);
+      if (hasPrototypeInfraPattern) {
+        findings.push({
+          file,
+          line: currentLine,
+          severity: "high",
+          kind: "PROTOTYPE_INFRA",
+          message:
+            "Prototype-grade infrastructure detected (SQLite, file-based storage, embedded DB). This won't work in cloud/container deployments with multiple instances.",
+          snippet: trimmedContent.slice(0, 100),
+        });
       }
 
       currentLine++;

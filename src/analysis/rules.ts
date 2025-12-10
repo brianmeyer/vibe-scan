@@ -35,7 +35,10 @@ export type RuleId =
   | "HARDCODED_SECRET"
   // Code quality rules
   | "TEMPORARY_HACK"
-  | "CONSOLE_DEBUG";
+  | "CONSOLE_DEBUG"
+  // Architecture rules
+  | "STATEFUL_SERVICE"
+  | "PROTOTYPE_INFRA";
 
 /**
  * Rule severity levels.
@@ -107,6 +110,10 @@ export const DEFAULT_RULE_CONFIG: Record<RuleId, RequiredRuleConfig> = {
   // Code quality rules - lower severity
   TEMPORARY_HACK: { enabled: true, level: "warning" },
   CONSOLE_DEBUG: { enabled: true, level: "info" },
+
+  // Architecture rules - critical for horizontal scaling
+  STATEFUL_SERVICE: { enabled: true, level: "error" },
+  PROTOTYPE_INFRA: { enabled: true, level: "error" },
 };
 
 /**
@@ -133,6 +140,7 @@ export const RULE_CATEGORIES = {
     "MEMORY_RISK",
     "LOOPED_IO",
     "BLOCKING_OPERATION",
+    "STATEFUL_SERVICE",
   ] as RuleId[],
   concurrency: [
     "SHARED_FILE_WRITE",
@@ -147,5 +155,9 @@ export const RULE_CATEGORIES = {
     "DATA_SHAPE_ASSUMPTION",
     "MIXED_RESPONSE_SHAPES",
     "HARDCODED_SECRET",
+  ] as RuleId[],
+  architecture: [
+    "STATEFUL_SERVICE",
+    "PROTOTYPE_INFRA",
   ] as RuleId[],
 } as const;
