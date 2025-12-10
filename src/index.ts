@@ -6,6 +6,12 @@ import { webhooks, registerEventHandlers } from "./integrations/github";
 import { getRedisClient, closeRedisConnection } from "./redis";
 import { logger } from "./logger";
 
+// Fail fast if Redis is not configured (required for token quota protection)
+if (!config.REDIS_URL) {
+  console.error("FATAL: REDIS_URL is required for token quota protection. Exiting.");
+  process.exit(1);
+}
+
 const app = express();
 const port = Number(config.PORT) || 3000;
 
