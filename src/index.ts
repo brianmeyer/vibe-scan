@@ -163,8 +163,18 @@ app.post("/webhook", bodyParser.raw({ type: "*/*" }), async (req: Request, res: 
 
   // Process webhook in background (fire and forget)
   logger.info("Processing webhook", { deliveryId: id, event: name });
+
+  // Parse payload - webhooks.receive expects an object, not a string
+  let parsedPayload: object;
+  try {
+    parsedPayload = typeof payload === "string" ? JSON.parse(payload) : payload;
+  } catch (err) {
+    logger.error("Failed to parse webhook payload", { deliveryId: id, event: name });
+    return;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  webhooks.receive({ id, name: name as any, payload }).catch((err) => {
+  webhooks.receive({ id, name: name as any, payload: parsedPayload }).catch((err) => {
     logger.error("Webhook handler error", {
       deliveryId: id,
       event: name,
