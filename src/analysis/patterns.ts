@@ -494,3 +494,35 @@ export const PROTOTYPE_INFRA_PATTERNS: Pattern[] = [
   // Hardcoded file paths for data storage (not just config)
   /(?:data|db|database|storage)(?:Path|File|Dir)?\s*[:=]\s*['"][./]/i,
 ];
+
+// ============================================================================
+// Security pattern constants
+// ============================================================================
+
+// Unsafe eval patterns - code execution vulnerabilities
+export const UNSAFE_EVAL_PATTERNS: Pattern[] = [
+  // JavaScript/TypeScript
+  /\beval\s*\(/,
+  /new\s+Function\s*\(/,
+  /setTimeout\s*\(\s*['"`]/,  // setTimeout with string (not function)
+  /setInterval\s*\(\s*['"`]/,  // setInterval with string (not function)
+  // Python
+  /\bexec\s*\(/,
+  /\beval\s*\(/,
+  /compile\s*\([^)]*,\s*['"]exec['"]/,
+];
+
+// Hardcoded URL patterns - should use config/env vars
+export const HARDCODED_URL_PATTERNS: Pattern[] = [
+  // Hardcoded localhost/127.0.0.1 (common in dev, breaks in prod)
+  /['"`]https?:\/\/localhost[:/]/,
+  /['"`]https?:\/\/127\.0\.0\.1[:/]/,
+  /['"`]https?:\/\/0\.0\.0\.0[:/]/,
+  // Hardcoded API URLs (should be configurable)
+  /(?:api|service|backend)(?:Url|Endpoint|Host|Base)\s*[:=]\s*['"`]https?:\/\//i,
+  // Hardcoded port numbers in URLs
+  /['"`]https?:\/\/[^'"`:]+:\d{4,5}[/'"`]/,
+  // Hardcoded WebSocket URLs
+  /['"`]wss?:\/\/localhost/,
+  /['"`]wss?:\/\/127\.0\.0\.1/,
+];

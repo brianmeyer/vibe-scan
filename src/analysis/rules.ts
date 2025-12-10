@@ -38,7 +38,10 @@ export type RuleId =
   | "CONSOLE_DEBUG"
   // Architecture rules
   | "STATEFUL_SERVICE"
-  | "PROTOTYPE_INFRA";
+  | "PROTOTYPE_INFRA"
+  // Security rules
+  | "UNSAFE_EVAL"
+  | "HARDCODED_URL";
 
 /**
  * Rule severity levels.
@@ -114,6 +117,10 @@ export const DEFAULT_RULE_CONFIG: Record<RuleId, RequiredRuleConfig> = {
   // Architecture rules - critical for horizontal scaling
   STATEFUL_SERVICE: { enabled: true, level: "error" },
   PROTOTYPE_INFRA: { enabled: true, level: "error" },
+
+  // Security rules
+  UNSAFE_EVAL: { enabled: true, level: "error" },
+  HARDCODED_URL: { enabled: true, level: "warning" },
 };
 
 /**
@@ -159,5 +166,10 @@ export const RULE_CATEGORIES = {
   architecture: [
     "STATEFUL_SERVICE",
     "PROTOTYPE_INFRA",
+  ] as RuleId[],
+  security: [
+    "HARDCODED_SECRET",
+    "UNSAFE_EVAL",
+    "HARDCODED_URL",
   ] as RuleId[],
 } as const;

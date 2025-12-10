@@ -575,3 +575,93 @@ describe("PROTOTYPE_INFRA detection", () => {
     expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
   });
 });
+
+describe("UNSAFE_EVAL detection", () => {
+  it("should detect eval()", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const result = eval(userInput);`;
+
+    const findings = analyzePatch("src/utils.ts", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+    const finding = findings.find((f) => f.kind === "UNSAFE_EVAL");
+    expect(finding?.severity).toBe("high");
+    expect(finding?.message).toContain("security vulnerability");
+  });
+
+  it("should detect new Function()", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const fn = new Function('return ' + code);`;
+
+    const findings = analyzePatch("src/dynamic.ts", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+  });
+
+  it("should detect setTimeout with string argument", () => {
+    const patch = `@@ -1,2 +1,2 @@
++setTimeout("alert('hello')", 1000);`;
+
+    const findings = analyzePatch("src/timer.ts", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+  });
+
+  it("should detect Python exec()", () => {
+    const patch = `@@ -1,2 +1,2 @@
++exec(user_code)`;
+
+    const findings = analyzePatch("src/runner.py", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+  });
+});
+
+describe("HARDCODED_URL detection", () => {
+  it("should detect hardcoded localhost URL", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const apiUrl = 'http://localhost:3000/api';`;
+
+    const findings = analyzePatch("src/config.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+    const finding = findings.find((f) => f.kind === "HARDCODED_URL");
+    expect(finding?.severity).toBe("medium");
+  });
+
+  it("should detect hardcoded 127.0.0.1 URL", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const server = "http://127.0.0.1:8080/";`;
+
+    const findings = analyzePatch("src/server.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+  });
+
+  it("should detect hardcoded API URL variable", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const apiUrl = "https://api.example.com/v1";`;
+
+    const findings = analyzePatch("src/client.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+  });
+
+  it("should detect hardcoded WebSocket URL", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const ws = new WebSocket('wss://localhost:3001');`;
+
+    const findings = analyzePatch("src/socket.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+  });
+
+  it("should NOT flag hardcoded URLs in test files", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const testUrl = 'http://localhost:3000/api';`;
+
+    const findings = analyzePatch("src/api.test.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(false);
+  });
+});

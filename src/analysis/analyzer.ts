@@ -32,6 +32,10 @@
  * Architecture Rule Kinds (Horizontal Scaling Killers):
  * - STATEFUL_SERVICE: in-memory storage (Map, Set, arrays) that breaks horizontal scaling
  * - PROTOTYPE_INFRA: "toy" infrastructure (SQLite, file-based DB) that won't work in cloud
+ *
+ * Security Rule Kinds:
+ * - UNSAFE_EVAL: eval(), exec(), new Function() - code execution vulnerabilities
+ * - HARDCODED_URL: localhost, hardcoded IPs/URLs that break in production
  */
 
 import { RuleId, RuleLevel, isValidRuleId } from "./rules";
@@ -70,6 +74,8 @@ import {
   BLOCKING_PATTERNS,
   STATEFUL_SERVICE_PATTERNS,
   PROTOTYPE_INFRA_PATTERNS,
+  UNSAFE_EVAL_PATTERNS,
+  HARDCODED_URL_PATTERNS,
   matchesAnyPattern,
 } from "./patterns";
 
@@ -622,6 +628,40 @@ export function analyzePatch(file: string, patch: string): Finding[] {
             "Prototype-grade infrastructure detected (SQLite, file-based storage, embedded DB). This won't work in cloud/container deployments with multiple instances.",
           snippet: trimmedContent.slice(0, 100),
         });
+      }
+
+      // ========================================
+      // w) UNSAFE_EVAL detection
+      // ========================================
+      const hasUnsafeEvalPattern = matchesAnyPattern(content, UNSAFE_EVAL_PATTERNS);
+      if (hasUnsafeEvalPattern) {
+        findings.push({
+          file,
+          line: currentLine,
+          severity: "high",
+          kind: "UNSAFE_EVAL",
+          message:
+            "Unsafe code execution detected (eval, exec, new Function). This is a security vulnerability that allows arbitrary code execution.",
+          snippet: trimmedContent.slice(0, 100),
+        });
+      }
+
+      // ========================================
+      // x) HARDCODED_URL detection (skip test files)
+      // ========================================
+      if (!isTestFile(file)) {
+        const hasHardcodedUrlPattern = matchesAnyPattern(content, HARDCODED_URL_PATTERNS);
+        if (hasHardcodedUrlPattern) {
+          findings.push({
+            file,
+            line: currentLine,
+            severity: "medium",
+            kind: "HARDCODED_URL",
+            message:
+              "Hardcoded URL detected (localhost, IP address, or full URL). Use environment variables or configuration for deployment flexibility.",
+            snippet: trimmedContent.slice(0, 100),
+          });
+        }
       }
 
       currentLine++;
