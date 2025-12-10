@@ -88,7 +88,8 @@ export class RubyAnalyzer implements LanguageAnalyzer {
 
   constructor() {
     this.parser = new Parser();
-    this.parser.setLanguage(Ruby as unknown as Parser.Language);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.parser.setLanguage(Ruby as any);
   }
 
   canAnalyze(filePath: string): boolean {
