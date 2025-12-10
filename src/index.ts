@@ -1,8 +1,10 @@
 import express, { Request, Response, NextFunction } from "express";
 import bodyParser from "body-parser";
+import rateLimit from "express-rate-limit";
 import { config } from "./env";
 import { webhooks, registerEventHandlers } from "./integrations/github";
 import { getRedisClient, closeRedisConnection } from "./redis";
+import { logger } from "./logger";
 
 const app = express();
 const port = Number(config.PORT) || 3000;
@@ -14,6 +16,28 @@ let server: ReturnType<typeof app.listen> | null = null;
 // Request timeout (30 seconds for most, 120 for webhook processing)
 const DEFAULT_TIMEOUT_MS = 30_000;
 const WEBHOOK_TIMEOUT_MS = 120_000;
+
+// Rate limiting - prevent abuse
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 100, // 100 requests per minute
+  message: { error: "Too many requests, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === "/health", // Don't rate limit health checks
+});
+
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 webhooks per minute (1/sec avg, allows bursts)
+  message: { error: "Too many webhook requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply rate limiting
+app.use(generalLimiter);
+app.use("/webhook", webhookLimiter);
 
 // Middleware: reject requests during shutdown
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -113,7 +137,11 @@ app.post("/webhook", bodyParser.raw({ type: "*/*" }), async (req: Request, res: 
   try {
     await webhooks.verify(payload, signature);
   } catch (err) {
-    console.error("[Webhook] Signature verification failed:", err instanceof Error ? err.message : err);
+    logger.error("Webhook signature verification failed", {
+      deliveryId: id,
+      event: name,
+      error: err instanceof Error ? err.message : "unknown",
+    });
     res.status(401).json({ error: "Invalid signature" });
     return;
   }
@@ -122,36 +150,40 @@ app.post("/webhook", bodyParser.raw({ type: "*/*" }), async (req: Request, res: 
   res.status(200).json({ ok: true });
 
   // Process webhook in background (fire and forget)
-  // Errors are caught by the unhandledRejection handler
+  logger.info("Processing webhook", { deliveryId: id, event: name });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   webhooks.receive({ id, name: name as any, payload }).catch((err) => {
-    console.error("[Webhook] Handler error:", err instanceof Error ? err.message : err);
+    logger.error("Webhook handler error", {
+      deliveryId: id,
+      event: name,
+      error: err instanceof Error ? err.message : "unknown",
+    });
   });
 });
 
 // Graceful shutdown handler
 async function shutdown(signal: string): Promise<void> {
-  console.log(`[Server] Received ${signal}, starting graceful shutdown...`);
+  logger.info("Graceful shutdown started", { signal });
   isShuttingDown = true;
 
   // Stop accepting new connections
   if (server) {
     server.close(() => {
-      console.log("[Server] HTTP server closed");
+      logger.info("HTTP server closed");
     });
   }
 
   // Close Redis connection
   try {
     await closeRedisConnection();
-    console.log("[Server] Redis connection closed");
+    logger.info("Redis connection closed");
   } catch (err) {
-    console.error("[Server] Error closing Redis:", err);
+    logger.error("Error closing Redis", { error: err instanceof Error ? err.message : "unknown" });
   }
 
   // Give in-flight requests time to complete (max 10 seconds)
   setTimeout(() => {
-    console.log("[Server] Shutdown complete");
+    logger.info("Shutdown complete");
     process.exit(0);
   }, 10_000);
 }
@@ -162,13 +194,12 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Unhandled rejection handler (don't crash on unhandled promises)
 process.on("unhandledRejection", (reason) => {
-  // Only log error message, not full stack/object to avoid leaking secrets
-  const message = reason instanceof Error ? reason.message : "unknown reason";
-  console.error("[Server] Unhandled Rejection:", message);
+  logger.error("Unhandled rejection", {
+    error: reason instanceof Error ? reason.message : "unknown",
+  });
 });
 
 // Start server
 server = app.listen(port, () => {
-  console.log(`[Server] Vibe Scan listening on port ${port}`);
-  console.log(`[Server] Health check: http://localhost:${port}/health`);
+  logger.info("Server started", { port, healthCheck: `http://localhost:${port}/health` });
 });
