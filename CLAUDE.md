@@ -19,8 +19,10 @@ npm test         # Run tests (requires Jest setup)
 
 ```
 src/
-├── index.ts               # Express server entry point
+├── index.ts               # Express server entry point (webhooks, health check)
 ├── env.ts                 # Environment variable config
+├── redis.ts               # Redis client singleton for token quota
+├── logger.ts              # Structured JSON logging for production
 ├── analysis/              # Static analysis modules
 │   ├── analyzer.ts        # Main analysis orchestration
 │   ├── patterns.ts        # Detection pattern constants
@@ -33,7 +35,12 @@ src/
 │   └── suppression.ts     # Inline suppression directives
 └── integrations/          # External service integrations
     ├── github.ts          # GitHub webhook handlers, PR check runs
-    └── llm.ts             # Groq/OpenAI LLM integration
+    └── llm.ts             # Groq/OpenAI LLM integration + token quota
+
+Deployment:
+├── Dockerfile             # Multi-stage Docker build for Railway
+├── railway.toml           # Railway configuration (health checks, restart policy)
+└── .dockerignore          # Docker build exclusions
 ```
 
 ## Key Concepts
@@ -75,6 +82,14 @@ Required for GitHub App:
 Required for LLM:
 - `GROQ_API_KEY`
 
+Required for Production:
+- `REDIS_URL` - Redis connection string (required for token quota protection)
+- `MONTHLY_TOKEN_QUOTA` - Optional, default 100,000 tokens/month per installation
+
+Set by Railway automatically:
+- `PORT` - Server port (Railway sets this dynamically)
+- `NODE_ENV` - Set to "production" in Dockerfile
+
 ## Common Tasks
 
 ### Adding a New Static Rule
@@ -91,3 +106,29 @@ Required for LLM:
 ### Testing Config Loading
 - Fixtures in `tests/fixtures/vibescan-config/`
 - Test file: `tests/config.test.ts`
+
+## Production Features
+
+### Health Check (`/health`)
+Returns JSON with status, uptime, memory usage, and Redis/GitHub config status.
+
+### Token Quota (src/integrations/llm.ts)
+- Monthly per-installation token limits stored in Redis
+- Keys: `vibe:usage:{installationId}:{YYYY-MM}`
+- Automatically expires after 35 days
+- Skips LLM analysis when quota exceeded
+
+### Rate Limiting (src/index.ts)
+- General: 100 req/min
+- Webhooks: 60 req/min
+- Health checks excluded from rate limiting
+
+### Async Webhook Processing
+- Responds to GitHub immediately (200 OK)
+- Processes analysis in background
+- Prevents GitHub webhook timeouts
+
+### Graceful Shutdown
+- Handles SIGTERM/SIGINT signals
+- Closes Redis connections cleanly
+- Stops accepting new requests during shutdown
