@@ -33,7 +33,12 @@ COPY --from=builder /app/dist ./dist
 # Set production environment
 ENV NODE_ENV=production
 
-# Railway sets PORT dynamically, no need to EXPOSE a fixed port
+# Expose port (Railway uses PORT env var)
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 3000) + '/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
 # Start the server
 CMD ["node", "dist/index.js"]
