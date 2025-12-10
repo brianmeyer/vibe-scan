@@ -16,7 +16,9 @@ const app = express();
 const port = Number(config.PORT) || 3000;
 
 // Track server state for graceful shutdown
+// vibescan-ignore-next-line GLOBAL_MUTATION
 let isShuttingDown = false;
+// vibescan-ignore-next-line GLOBAL_MUTATION
 let server: ReturnType<typeof app.listen> | null = null;
 
 // Request timeout (30 seconds for most, 120 for webhook processing)
