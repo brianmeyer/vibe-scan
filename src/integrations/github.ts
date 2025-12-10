@@ -658,6 +658,7 @@ export function registerEventHandlers(): void {
             staticFindings: fileFindings,
             fullContent,
             fileStructure,
+            installationId,
           });
 
           if (!result) {

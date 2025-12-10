@@ -14,6 +14,7 @@
 
 import OpenAI from "openai";
 import { config } from "../env";
+import { getRedisClient } from "../redis";
 
 // ============================================================================
 // Types
@@ -284,6 +285,82 @@ Rules:
 }
 
 // ============================================================================
+// Token Quota Management
+// ============================================================================
+
+/** Expiry time for quota keys (35 days in seconds) */
+const QUOTA_KEY_EXPIRY_SECONDS = 35 * 24 * 60 * 60;
+
+/**
+ * Generate the Redis key for an installation's monthly token usage.
+ */
+function getQuotaKey(installationId: number): string {
+  const now = new Date();
+  const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return `vibe:usage:${installationId}:${yearMonth}`;
+}
+
+/**
+ * Check if an installation has exceeded their monthly token quota.
+ */
+async function isQuotaExceeded(installationId: number): Promise<boolean> {
+  const redis = getRedisClient();
+  if (!redis) {
+    // No Redis = no quota enforcement
+    return false;
+  }
+
+  try {
+    const key = getQuotaKey(installationId);
+    const usage = await redis.get(key);
+    const currentUsage = usage ? parseInt(usage, 10) : 0;
+    const limit = config.MONTHLY_TOKEN_QUOTA;
+
+    if (currentUsage >= limit) {
+      console.warn(`[LLM] Quota exceeded for installation ${installationId}: ${currentUsage}/${limit} tokens`);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error("[LLM] Error checking quota:", error);
+    return false; // Fail open
+  }
+}
+
+/**
+ * Record token usage for an installation.
+ */
+async function recordTokenUsage(installationId: number, tokens: number): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+
+  try {
+    const key = getQuotaKey(installationId);
+    await redis.incrby(key, tokens);
+    await redis.expire(key, QUOTA_KEY_EXPIRY_SECONDS);
+  } catch (error) {
+    console.error("[LLM] Error recording token usage:", error);
+  }
+}
+
+/**
+ * Get current token usage for an installation.
+ */
+export async function getTokenUsage(installationId: number): Promise<number> {
+  const redis = getRedisClient();
+  if (!redis) return 0;
+
+  try {
+    const key = getQuotaKey(installationId);
+    const usage = await redis.get(key);
+    return usage ? parseInt(usage, 10) : 0;
+  } catch (error) {
+    console.error("[LLM] Error getting token usage:", error);
+    return 0;
+  }
+}
+
+// ============================================================================
 // Main Analysis Function
 // ============================================================================
 
@@ -291,7 +368,7 @@ Rules:
  * Analyze a code snippet using the LLM.
  *
  * @param params - Analysis parameters
- * @returns LlmAnalysisResult or null if LLM is unavailable/fails
+ * @returns LlmAnalysisResult or null if LLM is unavailable/fails/quota exceeded
  */
 export async function analyzeSnippetWithLlm(params: {
   file: string;
@@ -304,11 +381,22 @@ export async function analyzeSnippetWithLlm(params: {
   fileStructure?: string;
   /** Optional full file content for deep analysis */
   fullContent?: string;
+  /** GitHub App installation ID for quota tracking */
+  installationId?: number;
 }): Promise<LlmAnalysisResult | null> {
   // Check if API key is configured
   if (!config.GROQ_API_KEY) {
     console.warn("[LLM] GROQ_API_KEY not configured, skipping LLM analysis");
     return null;
+  }
+
+  // Check quota if installationId is provided
+  if (params.installationId) {
+    const exceeded = await isQuotaExceeded(params.installationId);
+    if (exceeded) {
+      console.warn(`[LLM] Quota exceeded for installation ${params.installationId}, skipping LLM analysis`);
+      return null;
+    }
   }
 
   const openai = createOpenAIClient();
@@ -335,6 +423,13 @@ export async function analyzeSnippetWithLlm(params: {
       temperature: 0.1,
       max_tokens: 1024,
     });
+
+    // Record token usage if installationId is provided
+    if (params.installationId && completion.usage) {
+      const totalTokens = completion.usage.total_tokens || 0;
+      await recordTokenUsage(params.installationId, totalTokens);
+      console.log(`[LLM] Recorded ${totalTokens} tokens for installation ${params.installationId}`);
+    }
 
     const content = completion.choices[0]?.message?.content;
     if (!content) {
