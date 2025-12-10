@@ -298,49 +298,80 @@ function buildHighRiskCommentBody(params: {
   llmIssues: LlmIssue[];
   vibeScore: number;
   vibeLabel: string;
+  archSummary?: ArchitectureRiskSummary;
 }): string | null {
-  const { staticFindings, llmIssues, vibeScore, vibeLabel } = params;
+  const { staticFindings, llmIssues, vibeScore, vibeLabel, archSummary } = params;
 
   const highStatic = staticFindings.filter((f) => f.severity === "high");
   const highLlm = llmIssues.filter((i) => i.severity === "high");
 
-  if (highStatic.length === 0 && highLlm.length === 0) {
+  // Show comment if there are high-risk findings OR if score is below 60
+  const hasHighRisk = highStatic.length > 0 || highLlm.length > 0;
+  const isRiskyScore = vibeScore < 60;
+
+  if (!hasHighRisk && !isRiskyScore) {
     return null;
   }
 
-  let body = `🚨 **Vibe Scan high-risk summary**\n\n`;
-  body += `Vibe Score: **${vibeScore} (${vibeLabel})**\n\n`;
-  body += `These findings look risky for production and deserve extra attention before merging.\n\n`;
+  let body = `🚨 **Vibe Scan Summary**\n\n`;
+  body += `**Vibe Score: ${vibeScore} (${vibeLabel})**\n\n`;
 
+  // Add compact architecture summary at the top
+  if (archSummary) {
+    const categories: { emoji: string; name: string; data: { count: number; topIssues: ArchIssue[] } }[] = [
+      { emoji: "📈", name: "Scaling", data: archSummary.scaling },
+      { emoji: "🔀", name: "Concurrency", data: archSummary.concurrency },
+      { emoji: "⚠️", name: "Errors", data: archSummary.errorHandling },
+      { emoji: "📋", name: "Data", data: archSummary.dataIntegrity },
+    ];
+
+    const activeCategories = categories.filter((c) => c.data.count > 0);
+    if (activeCategories.length > 0) {
+      for (const cat of activeCategories) {
+        body += `${cat.emoji} **${cat.name}** (${cat.data.count})`;
+        if (cat.data.topIssues.length > 0) {
+          const top = cat.data.topIssues[0];
+          const loc = top.line ? `${top.file}:${top.line}` : top.file;
+          body += ` – \`${loc}\` ${top.snippet}`;
+          if (cat.data.count > 1) {
+            body += ` _+${cat.data.count - 1} more_`;
+          }
+        }
+        body += `\n`;
+      }
+      body += `\n`;
+    }
+  }
+
+  // High-risk details (if any)
   if (highStatic.length) {
-    body += `### ⚠️ Static analysis high-risk findings\n\n`;
+    body += `<details><summary>⚠️ ${highStatic.length} high-risk static finding(s)</summary>\n\n`;
     highStatic.slice(0, 5).forEach((f) => {
       const location = f.line ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``;
-      body += `- ${location} **(${f.kind})** – ${f.message}\n`;
+      body += `- ${location} **${RULE_DESCRIPTIONS[f.kind] || f.kind}**\n`;
     });
     if (highStatic.length > 5) {
-      body += `\n…and ${highStatic.length - 5} more static high-risk finding(s).\n`;
+      body += `\n…and ${highStatic.length - 5} more.\n`;
     }
-    body += `\n`;
+    body += `\n</details>\n\n`;
   }
 
   if (highLlm.length) {
-    body += `### 🤖 AI (LLM) high-risk findings\n\n`;
+    body += `<details><summary>🤖 ${highLlm.length} high-risk AI finding(s)</summary>\n\n`;
     highLlm.slice(0, 5).forEach((issue) => {
-      const kindLabel = LLM_ISSUE_KIND_LABELS[issue.kind];
-      body += `- **(${kindLabel}) ${issue.title}** – ${issue.summary}`;
+      body += `- **${issue.title}** – ${issue.summary}`;
       if (issue.suggestedFix) {
-        body += ` 💡 _Suggested fix:_ ${issue.suggestedFix}`;
+        body += ` 💡 ${issue.suggestedFix}`;
       }
       body += `\n`;
     });
     if (highLlm.length > 5) {
-      body += `\n…and ${highLlm.length - 5} more AI high-risk issue(s).\n`;
+      body += `\n…and ${highLlm.length - 5} more.\n`;
     }
+    body += `\n</details>\n`;
   }
 
-  body += `\n---\n`;
-  body += `_(Vibe Scan combines static checks + AI analysis. Treat this as an advisory production-risk review.)_`;
+  body += `\n_See check run for full details._`;
 
   return body;
 }
@@ -372,13 +403,23 @@ async function postHighRiskComment(params: {
 // ============================================================================
 
 /**
+ * A condensed issue for architecture summary display.
+ */
+interface ArchIssue {
+  file: string;
+  line?: number;
+  snippet: string;
+  kind: string;
+}
+
+/**
  * Categories for architecture risk summary.
  */
 interface ArchitectureRiskSummary {
-  scaling: { count: number; kinds: string[] };
-  concurrency: { count: number; kinds: string[] };
-  errorHandling: { count: number; kinds: string[] };
-  dataIntegrity: { count: number; kinds: string[] };
+  scaling: { count: number; topIssues: ArchIssue[] };
+  concurrency: { count: number; topIssues: ArchIssue[] };
+  errorHandling: { count: number; topIssues: ArchIssue[] };
+  dataIntegrity: { count: number; topIssues: ArchIssue[] };
 }
 
 /**
@@ -416,9 +457,35 @@ const DATA_INTEGRITY_KINDS = new Set([
   "HIDDEN_ASSUMPTIONS",
 ]);
 
+/** Max top issues to show per category */
+const MAX_TOP_ISSUES_PER_CATEGORY = 2;
+
+/**
+ * Human-readable descriptions for rule kinds.
+ */
+const RULE_DESCRIPTIONS: Record<string, string> = {
+  UNBOUNDED_QUERY: "Query without limit",
+  LOOPED_IO: "I/O call in loop (N+1)",
+  MEMORY_RISK: "Loading large data into memory",
+  GLOBAL_MUTATION: "Mutable global state",
+  CHECK_THEN_ACT_RACE: "Race condition (check-then-act)",
+  SILENT_ERROR: "Error swallowed silently",
+  UNSAFE_IO: "Network call without error handling",
+  STATEFUL_SERVICE: "In-memory state (breaks scaling)",
+  PROTOTYPE_INFRA: "Non-production infrastructure",
+  HARDCODED_SECRET: "Hardcoded credential",
+  UNSAFE_EVAL: "Dynamic code execution",
+  SCALING_RISK: "Scaling concern",
+  CONCURRENCY_RISK: "Concurrency issue",
+  RESILIENCE_GAP: "Missing fault tolerance",
+  OBSERVABILITY_GAP: "Missing observability",
+  DATA_CONTRACT_RISK: "Data validation issue",
+  ENVIRONMENT_ASSUMPTION: "Environment-specific code",
+};
+
 /**
  * Compute an architecture risk summary from static findings and LLM issues.
- * Groups findings into risk categories for cross-file analysis.
+ * Groups findings into risk categories and captures top issues for display.
  */
 function computeArchitectureRiskSummary(params: {
   staticFindings: Finding[];
@@ -426,78 +493,93 @@ function computeArchitectureRiskSummary(params: {
 }): ArchitectureRiskSummary {
   const { staticFindings, llmIssues } = params;
 
-  const summary: ArchitectureRiskSummary = {
-    scaling: { count: 0, kinds: [] },
-    concurrency: { count: 0, kinds: [] },
-    errorHandling: { count: 0, kinds: [] },
-    dataIntegrity: { count: 0, kinds: [] },
-  };
+  // Collect issues by category
+  const scalingIssues: ArchIssue[] = [];
+  const concurrencyIssues: ArchIssue[] = [];
+  const errorHandlingIssues: ArchIssue[] = [];
+  const dataIntegrityIssues: ArchIssue[] = [];
 
-  const scalingKindsFound = new Set<string>();
-  const concurrencyKindsFound = new Set<string>();
-  const errorHandlingKindsFound = new Set<string>();
-  const dataIntegrityKindsFound = new Set<string>();
+  // Helper to convert finding to ArchIssue
+  const toArchIssue = (f: Finding): ArchIssue => ({
+    file: f.file,
+    line: f.line,
+    snippet: RULE_DESCRIPTIONS[f.kind] || f.kind,
+    kind: f.kind,
+  });
 
-  // Categorize static findings
-  for (const f of staticFindings) {
+  // Helper to convert LLM issue to ArchIssue
+  const llmToArchIssue = (issue: LlmIssue): ArchIssue => ({
+    file: issue.file || "unknown",
+    line: issue.line,
+    snippet: issue.title || RULE_DESCRIPTIONS[issue.kind] || issue.kind,
+    kind: issue.kind,
+  });
+
+  // Categorize static findings (prioritize high severity)
+  const sortedFindings = [...staticFindings].sort((a, b) => {
+    const severityOrder = { high: 0, medium: 1, low: 2 };
+    return (severityOrder[a.severity] || 2) - (severityOrder[b.severity] || 2);
+  });
+
+  for (const f of sortedFindings) {
     if (SCALING_KINDS.has(f.kind)) {
-      summary.scaling.count++;
-      scalingKindsFound.add(f.kind);
+      scalingIssues.push(toArchIssue(f));
     } else if (CONCURRENCY_KINDS.has(f.kind)) {
-      summary.concurrency.count++;
-      concurrencyKindsFound.add(f.kind);
+      concurrencyIssues.push(toArchIssue(f));
     } else if (ERROR_HANDLING_KINDS.has(f.kind)) {
-      summary.errorHandling.count++;
-      errorHandlingKindsFound.add(f.kind);
+      errorHandlingIssues.push(toArchIssue(f));
     } else if (DATA_INTEGRITY_KINDS.has(f.kind)) {
-      summary.dataIntegrity.count++;
-      dataIntegrityKindsFound.add(f.kind);
+      dataIntegrityIssues.push(toArchIssue(f));
     }
   }
 
-  // Categorize LLM issues using the new simplified kind system
+  // Categorize LLM issues
   for (const issue of llmIssues) {
+    const archIssue = llmToArchIssue(issue);
     switch (issue.kind) {
       case "SCALING_RISK":
-        summary.scaling.count++;
-        scalingKindsFound.add(issue.kind);
+      case "ENVIRONMENT_ASSUMPTION":
+        scalingIssues.push(archIssue);
         break;
       case "CONCURRENCY_RISK":
-        summary.concurrency.count++;
-        concurrencyKindsFound.add(issue.kind);
+        concurrencyIssues.push(archIssue);
         break;
       case "RESILIENCE_GAP":
       case "OBSERVABILITY_GAP":
-        // Resilience and observability map to error handling
-        summary.errorHandling.count++;
-        errorHandlingKindsFound.add(issue.kind);
+        errorHandlingIssues.push(archIssue);
         break;
       case "DATA_CONTRACT_RISK":
-        summary.dataIntegrity.count++;
-        dataIntegrityKindsFound.add(issue.kind);
-        break;
-      case "ENVIRONMENT_ASSUMPTION":
-        // Environment assumptions often manifest as scaling issues
-        summary.scaling.count++;
-        scalingKindsFound.add(issue.kind);
+        dataIntegrityIssues.push(archIssue);
         break;
     }
   }
 
-  summary.scaling.kinds = Array.from(scalingKindsFound);
-  summary.concurrency.kinds = Array.from(concurrencyKindsFound);
-  summary.errorHandling.kinds = Array.from(errorHandlingKindsFound);
-  summary.dataIntegrity.kinds = Array.from(dataIntegrityKindsFound);
-
-  return summary;
+  return {
+    scaling: {
+      count: scalingIssues.length,
+      topIssues: scalingIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+    concurrency: {
+      count: concurrencyIssues.length,
+      topIssues: concurrencyIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+    errorHandling: {
+      count: errorHandlingIssues.length,
+      topIssues: errorHandlingIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+    dataIntegrity: {
+      count: dataIntegrityIssues.length,
+      topIssues: dataIntegrityIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+  };
 }
 
 /**
  * Build a markdown section for the architecture risk summary.
+ * Shows top issues with locations, not just counts.
  */
 function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string {
   let text = "## Architecture Risk Summary\n\n";
-  text += "Cross-file analysis of production risk patterns:\n\n";
 
   const hasAnyRisks =
     summary.scaling.count > 0 ||
@@ -506,24 +588,34 @@ function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string 
     summary.dataIntegrity.count > 0;
 
   if (!hasAnyRisks) {
-    text += "_No major architectural risk patterns detected across this PR._\n";
+    text += "_No major architectural risk patterns detected._\n";
     return text;
   }
 
-  if (summary.scaling.count > 0) {
-    text += `| **Scaling** | ${summary.scaling.count} issue(s) | ${summary.scaling.kinds.join(", ")} |\n`;
-  }
-  if (summary.concurrency.count > 0) {
-    text += `| **Concurrency** | ${summary.concurrency.count} issue(s) | ${summary.concurrency.kinds.join(", ")} |\n`;
-  }
-  if (summary.errorHandling.count > 0) {
-    text += `| **Error Handling** | ${summary.errorHandling.count} issue(s) | ${summary.errorHandling.kinds.join(", ")} |\n`;
-  }
-  if (summary.dataIntegrity.count > 0) {
-    text += `| **Data Integrity** | ${summary.dataIntegrity.count} issue(s) | ${summary.dataIntegrity.kinds.join(", ")} |\n`;
-  }
+  // Helper to format a category
+  const formatCategory = (
+    emoji: string,
+    name: string,
+    data: { count: number; topIssues: ArchIssue[] }
+  ): string => {
+    if (data.count === 0) return "";
 
-  text += "\n";
+    let section = `**${emoji} ${name}** (${data.count})\n`;
+    for (const issue of data.topIssues) {
+      const loc = issue.line ? `${issue.file}:${issue.line}` : issue.file;
+      section += `- \`${loc}\` ${issue.snippet}\n`;
+    }
+    if (data.count > data.topIssues.length) {
+      section += `- _+${data.count - data.topIssues.length} more_\n`;
+    }
+    return section + "\n";
+  };
+
+  text += formatCategory("📈", "Scaling", summary.scaling);
+  text += formatCategory("🔀", "Concurrency", summary.concurrency);
+  text += formatCategory("⚠️", "Error Handling", summary.errorHandling);
+  text += formatCategory("📋", "Data Integrity", summary.dataIntegrity);
+
   return text;
 }
 
@@ -783,6 +875,7 @@ export function registerEventHandlers(): void {
         llmIssues,
         vibeScore,
         vibeLabel,
+        archSummary,
       });
 
       if (commentBody) {
