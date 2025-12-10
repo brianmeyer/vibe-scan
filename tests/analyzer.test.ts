@@ -417,3 +417,251 @@ const query = "SELECT * FROM users";
     expect(findings.some((f) => f.kind === "UNSAFE_IO")).toBe(true);
   });
 });
+
+describe("STATEFUL_SERVICE detection", () => {
+  it("should detect this.store = new Map()", () => {
+    const patch = `@@ -1,3 +1,5 @@
++class RateLimiter {
++  constructor() {
++    this.store = new Map();
++  }
++}`;
+
+    const findings = analyzePatch("src/services/rateLimiter.js", patch);
+
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+    const finding = findings.find((f) => f.kind === "STATEFUL_SERVICE");
+    expect(finding?.severity).toBe("high");
+    expect(finding?.message).toContain("horizontal scaling");
+  });
+
+  it("should detect this.cache = new Map()", () => {
+    const patch = `@@ -1,3 +1,5 @@
++class CacheService {
++  constructor() {
++    this.cache = new Map();
++  }
++}`;
+
+    const findings = analyzePatch("src/services/cache.ts", patch);
+
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+  });
+
+  it("should detect this.sessions = {}", () => {
+    const patch = `@@ -1,3 +1,5 @@
++class SessionManager {
++  constructor() {
++    this.sessions = {};
++  }
++}`;
+
+    const findings = analyzePatch("src/services/session.ts", patch);
+
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+  });
+
+  it("should detect this.listeners = []", () => {
+    const patch = `@@ -1,3 +1,5 @@
++class EventEmitter {
++  constructor() {
++    this.listeners = [];
++  }
++}`;
+
+    const findings = analyzePatch("src/services/events.ts", patch);
+
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+  });
+
+  it("should detect module-level stateful variables", () => {
+    const patch = `@@ -1,2 +1,3 @@
++const cache = new Map();
++const sessions = {};`;
+
+    const findings = analyzePatch("src/cache.ts", patch);
+
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+  });
+
+  it("should detect Python self.cache patterns", () => {
+    const patch = `@@ -1,4 +1,6 @@
++class CacheService:
++    def __init__(self):
++        self.cache = {}
++        self.sessions = dict()`;
+
+    const findings = analyzePatch("src/cache.py", patch);
+
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+  });
+});
+
+describe("PROTOTYPE_INFRA detection", () => {
+  it("should detect require('sqlite3')", () => {
+    const patch = `@@ -1,2 +1,3 @@
++const sqlite3 = require('sqlite3');
++const db = new sqlite3.Database('./data.db');`;
+
+    const findings = analyzePatch("src/database.js", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+    const finding = findings.find((f) => f.kind === "PROTOTYPE_INFRA");
+    expect(finding?.severity).toBe("high");
+    expect(finding?.message).toContain("cloud/container");
+  });
+
+  it("should detect new sqlite3.Database()", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const db = new sqlite3.Database('./mydata.db');`;
+
+    const findings = analyzePatch("src/db.ts", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should detect require('lowdb')", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const low = require('lowdb');`;
+
+    const findings = analyzePatch("src/db.js", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should detect JSON.parse(fs.readFileSync(*.json))", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const data = JSON.parse(fs.readFileSync('./users.json'));`;
+
+    const findings = analyzePatch("src/data.ts", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should detect import from sqlite3", () => {
+    const patch = `@@ -1,2 +1,2 @@
++import Database from 'sqlite3';`;
+
+    const findings = analyzePatch("src/db.ts", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should detect Python sqlite3 usage", () => {
+    const patch = `@@ -1,3 +1,4 @@
++import sqlite3
++conn = sqlite3.connect('example.db')`;
+
+    const findings = analyzePatch("src/db.py", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should detect new Database with .db extension", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const db = new Database('./data.sqlite');`;
+
+    const findings = analyzePatch("src/storage.ts", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should detect hardcoded database path patterns", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const databasePath = './data/users.json';`;
+
+    const findings = analyzePatch("src/config.ts", patch);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+});
+
+describe("UNSAFE_EVAL detection", () => {
+  it("should detect eval()", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const result = eval(userInput);`;
+
+    const findings = analyzePatch("src/utils.ts", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+    const finding = findings.find((f) => f.kind === "UNSAFE_EVAL");
+    expect(finding?.severity).toBe("high");
+    expect(finding?.message).toContain("security vulnerability");
+  });
+
+  it("should detect new Function()", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const fn = new Function('return ' + code);`;
+
+    const findings = analyzePatch("src/dynamic.ts", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+  });
+
+  it("should detect setTimeout with string argument", () => {
+    const patch = `@@ -1,2 +1,2 @@
++setTimeout("alert('hello')", 1000);`;
+
+    const findings = analyzePatch("src/timer.ts", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+  });
+
+  it("should detect Python exec()", () => {
+    const patch = `@@ -1,2 +1,2 @@
++exec(user_code)`;
+
+    const findings = analyzePatch("src/runner.py", patch);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+  });
+});
+
+describe("HARDCODED_URL detection", () => {
+  it("should detect hardcoded localhost URL", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const apiUrl = 'http://localhost:3000/api';`;
+
+    const findings = analyzePatch("src/config.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+    const finding = findings.find((f) => f.kind === "HARDCODED_URL");
+    expect(finding?.severity).toBe("medium");
+  });
+
+  it("should detect hardcoded 127.0.0.1 URL", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const server = "http://127.0.0.1:8080/";`;
+
+    const findings = analyzePatch("src/server.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+  });
+
+  it("should detect hardcoded API URL variable", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const apiUrl = "https://api.example.com/v1";`;
+
+    const findings = analyzePatch("src/client.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+  });
+
+  it("should detect hardcoded WebSocket URL", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const ws = new WebSocket('wss://localhost:3001');`;
+
+    const findings = analyzePatch("src/socket.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(true);
+  });
+
+  it("should NOT flag hardcoded URLs in test files", () => {
+    const patch = `@@ -1,2 +1,2 @@
++const testUrl = 'http://localhost:3000/api';`;
+
+    const findings = analyzePatch("src/api.test.ts", patch);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(false);
+  });
+});

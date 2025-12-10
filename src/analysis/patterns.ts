@@ -435,3 +435,94 @@ export const BLOCKING_PATTERNS: Pattern[] = [
   // Python blocking patterns (in async context)
   /time\s*\.\s*sleep\s*\(/,  // In async code, should use asyncio.sleep
 ];
+
+// ============================================================================
+// Architecture pattern constants (horizontal scaling killers)
+// ============================================================================
+
+// Stateful service patterns - in-memory storage that kills horizontal scaling
+// These patterns indicate storing state in memory that won't be shared across instances
+export const STATEFUL_SERVICE_PATTERNS: Pattern[] = [
+  // JavaScript/TypeScript class property assignments with in-memory storage
+  /this\s*\.\s*\w+\s*=\s*new\s+Map\s*\(/,
+  /this\s*\.\s*\w+\s*=\s*new\s+Set\s*\(/,
+  /this\s*\.\s*\w+\s*=\s*new\s+WeakMap\s*\(/,
+  /this\s*\.\s*\w+\s*=\s*new\s+WeakSet\s*\(/,
+  /this\s*\.\s*\w+\s*=\s*\[\s*\]/,  // this.items = []
+  /this\s*\.\s*\w+\s*=\s*\{\s*\}/,  // this.cache = {}
+  // Common stateful property names
+  /this\s*\.\s*(?:cache|store|storage|sessions|activeConnections|listeners|handlers|subscribers|queue|messageQueue|taskQueue|pending|jobs)\s*=/i,
+  // Module-level state that persists across requests
+  /^(?:const|let|var)\s+(?:cache|store|sessions|connections|listeners|handlers|queue|messageQueue)\s*=\s*(?:new\s+(?:Map|Set)|{}|\[\])/,
+  // Python class-level stateful attributes
+  /self\s*\.\s*\w+\s*=\s*(?:dict\s*\(\s*\)|set\s*\(\s*\)|\[\s*\]|\{\s*\})/,
+  /self\s*\.\s*(?:cache|store|sessions|connections|listeners|handlers|queue|message_queue)\s*=/i,
+  // Go package-level maps (state)
+  /^var\s+\w+\s*=\s*make\s*\(\s*map\s*\[/,
+  /^var\s+\w+\s+map\s*\[/,
+];
+
+// Prototype infrastructure patterns - "toy" infra that won't work in cloud/containers
+export const PROTOTYPE_INFRA_PATTERNS: Pattern[] = [
+  // SQLite (embedded database - no concurrent access, no distributed deployment)
+  /require\s*\(\s*['"]sqlite3['"]\s*\)/,
+  /require\s*\(\s*['"]better-sqlite3['"]\s*\)/,
+  /import\s+.*\s+from\s+['"]sqlite3['"]/,
+  /import\s+.*\s+from\s+['"]better-sqlite3['"]/,
+  /new\s+sqlite3\s*\.\s*Database\s*\(/,
+  /new\s+Database\s*\(\s*['"][^'"]+\.(?:db|sqlite)/i,
+  // LowDB (JSON file database)
+  /require\s*\(\s*['"]lowdb['"]\s*\)/,
+  /import\s+.*\s+from\s+['"]lowdb['"]/,
+  /new\s+Low\s*\(/,
+  // NeDB (another embedded database)
+  /require\s*\(\s*['"]nedb['"]\s*\)/,
+  /import\s+.*\s+from\s+['"]nedb['"]/,
+  /new\s+Datastore\s*\(/,
+  // JSON file as database (reading/writing data files)
+  /JSON\s*\.\s*parse\s*\(\s*(?:fs\s*\.\s*)?readFileSync\s*\(\s*['"][^'"]+\.json['"]/,
+  /(?:fs\s*\.\s*)?writeFileSync\s*\(\s*['"][^'"]+\.json['"]\s*,\s*JSON\s*\.\s*stringify/,
+  // Python SQLite
+  /import\s+sqlite3/,
+  /sqlite3\s*\.\s*connect\s*\(/,
+  // Python TinyDB
+  /from\s+tinydb\s+import/,
+  /TinyDB\s*\(/,
+  // File-based session storage
+  /session\s*:\s*{\s*secret.*store\s*:\s*.*FileStore/,
+  /new\s+FileStore\s*\(/,
+  // Hardcoded file paths for data storage (not just config)
+  /(?:data|db|database|storage)(?:Path|File|Dir)?\s*[:=]\s*['"][./]/i,
+];
+
+// ============================================================================
+// Security pattern constants
+// ============================================================================
+
+// Unsafe eval patterns - code execution vulnerabilities
+export const UNSAFE_EVAL_PATTERNS: Pattern[] = [
+  // JavaScript/TypeScript
+  /\beval\s*\(/,
+  /new\s+Function\s*\(/,
+  /setTimeout\s*\(\s*['"`]/,  // setTimeout with string (not function)
+  /setInterval\s*\(\s*['"`]/,  // setInterval with string (not function)
+  // Python
+  /\bexec\s*\(/,
+  /\beval\s*\(/,
+  /compile\s*\([^)]*,\s*['"]exec['"]/,
+];
+
+// Hardcoded URL patterns - should use config/env vars
+export const HARDCODED_URL_PATTERNS: Pattern[] = [
+  // Hardcoded localhost/127.0.0.1 (common in dev, breaks in prod)
+  /['"`]https?:\/\/localhost[:/]/,
+  /['"`]https?:\/\/127\.0\.0\.1[:/]/,
+  /['"`]https?:\/\/0\.0\.0\.0[:/]/,
+  // Hardcoded API URLs (should be configurable)
+  /(?:api|service|backend)(?:Url|Endpoint|Host|Base)\s*[:=]\s*['"`]https?:\/\//i,
+  // Hardcoded port numbers in URLs
+  /['"`]https?:\/\/[^'"`:]+:\d{4,5}[/'"`]/,
+  // Hardcoded WebSocket URLs
+  /['"`]wss?:\/\/localhost/,
+  /['"`]wss?:\/\/127\.0\.0\.1/,
+];

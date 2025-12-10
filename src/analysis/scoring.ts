@@ -38,6 +38,8 @@ const SCALING_KINDS = new Set<string>([
   "NO_CACHING",
   "MEMORY_RISK",
   "LOOPED_IO",
+  "STATEFUL_SERVICE",
+  "PROTOTYPE_INFRA",
 ]);
 
 /**
@@ -49,6 +51,15 @@ const CONCURRENCY_KINDS = new Set<string>([
   "RETRY_STORM_RISK",
   "BUSY_WAIT_OR_TIGHT_LOOP",
   "CHECK_THEN_ACT_RACE",
+]);
+
+/**
+ * Set of security-related kind identifiers that receive heavier penalties.
+ * These represent potential security vulnerabilities.
+ */
+const SECURITY_KINDS = new Set<string>([
+  "HARDCODED_SECRET",
+  "UNSAFE_EVAL",
 ]);
 
 /**
@@ -119,10 +130,11 @@ export function computeVibeScore(params: {
 
   let score = 100;
 
-  // Static finding penalties with scaling/concurrency-aware weighting
+  // Static finding penalties with scaling/concurrency/security-aware weighting
   for (const f of staticFindings) {
     const isScalingKind = SCALING_KINDS.has(f.kind);
     const isConcurrencyKind = CONCURRENCY_KINDS.has(f.kind);
+    const isSecurityKind = SECURITY_KINDS.has(f.kind);
 
     // Get the level multiplier (default to "error" if no level set)
     const level: RuleLevel = f.level ?? "error";
@@ -135,8 +147,8 @@ export function computeVibeScore(params: {
 
     let basePenalty: number;
 
-    if (isScalingKind || isConcurrencyKind) {
-      // Heavier penalties for scaling and concurrency-related issues
+    if (isScalingKind || isConcurrencyKind || isSecurityKind) {
+      // Heavier penalties for scaling, concurrency, and security-related issues
       switch (f.severity) {
         case "high":
           basePenalty = BASE_PENALTIES.scalingHigh;

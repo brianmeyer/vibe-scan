@@ -28,6 +28,14 @@
  * - RETRY_STORM_RISK: retry loops without exponential backoff/jitter
  * - BUSY_WAIT_OR_TIGHT_LOOP: tight loops without delay (CPU spinning)
  * - CHECK_THEN_ACT_RACE: find-then-create patterns that can race
+ *
+ * Architecture Rule Kinds (Horizontal Scaling Killers):
+ * - STATEFUL_SERVICE: in-memory storage (Map, Set, arrays) that breaks horizontal scaling
+ * - PROTOTYPE_INFRA: "toy" infrastructure (SQLite, file-based DB) that won't work in cloud
+ *
+ * Security Rule Kinds:
+ * - UNSAFE_EVAL: eval(), exec(), new Function() - code execution vulnerabilities
+ * - HARDCODED_URL: localhost, hardcoded IPs/URLs that break in production
  */
 
 import { RuleId, RuleLevel, isValidRuleId } from "./rules";
@@ -64,6 +72,10 @@ import {
   MEMORY_RISK_PATTERNS,
   SECRET_PATTERNS,
   BLOCKING_PATTERNS,
+  STATEFUL_SERVICE_PATTERNS,
+  PROTOTYPE_INFRA_PATTERNS,
+  UNSAFE_EVAL_PATTERNS,
+  HARDCODED_URL_PATTERNS,
   matchesAnyPattern,
 } from "./patterns";
 
@@ -581,6 +593,72 @@ export function analyzePatch(file: string, patch: string): Finding[] {
             kind: "BLOCKING_OPERATION",
             message:
               "Synchronous blocking operation detected. This blocks the event loop and can cause performance issues under load. Consider using async alternatives.",
+            snippet: trimmedContent.slice(0, 100),
+          });
+        }
+      }
+
+      // ========================================
+      // u) STATEFUL_SERVICE detection
+      // ========================================
+      const hasStatefulServicePattern = matchesAnyPattern(content, STATEFUL_SERVICE_PATTERNS);
+      if (hasStatefulServicePattern) {
+        findings.push({
+          file,
+          line: currentLine,
+          severity: "high",
+          kind: "STATEFUL_SERVICE",
+          message:
+            "In-memory state storage detected. This prevents horizontal scaling - each instance has separate state. Use Redis, database, or external cache instead.",
+          snippet: trimmedContent.slice(0, 100),
+        });
+      }
+
+      // ========================================
+      // v) PROTOTYPE_INFRA detection
+      // ========================================
+      const hasPrototypeInfraPattern = matchesAnyPattern(content, PROTOTYPE_INFRA_PATTERNS);
+      if (hasPrototypeInfraPattern) {
+        findings.push({
+          file,
+          line: currentLine,
+          severity: "high",
+          kind: "PROTOTYPE_INFRA",
+          message:
+            "Prototype-grade infrastructure detected (SQLite, file-based storage, embedded DB). This won't work in cloud/container deployments with multiple instances.",
+          snippet: trimmedContent.slice(0, 100),
+        });
+      }
+
+      // ========================================
+      // w) UNSAFE_EVAL detection
+      // ========================================
+      const hasUnsafeEvalPattern = matchesAnyPattern(content, UNSAFE_EVAL_PATTERNS);
+      if (hasUnsafeEvalPattern) {
+        findings.push({
+          file,
+          line: currentLine,
+          severity: "high",
+          kind: "UNSAFE_EVAL",
+          message:
+            "Unsafe code execution detected (eval, exec, new Function). This is a security vulnerability that allows arbitrary code execution.",
+          snippet: trimmedContent.slice(0, 100),
+        });
+      }
+
+      // ========================================
+      // x) HARDCODED_URL detection (skip test files)
+      // ========================================
+      if (!isTestFile(file)) {
+        const hasHardcodedUrlPattern = matchesAnyPattern(content, HARDCODED_URL_PATTERNS);
+        if (hasHardcodedUrlPattern) {
+          findings.push({
+            file,
+            line: currentLine,
+            severity: "medium",
+            kind: "HARDCODED_URL",
+            message:
+              "Hardcoded URL detected (localhost, IP address, or full URL). Use environment variables or configuration for deployment flexibility.",
             snippet: trimmedContent.slice(0, 100),
           });
         }
