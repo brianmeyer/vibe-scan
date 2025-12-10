@@ -2,7 +2,12 @@ import { Webhooks } from "@octokit/webhooks";
 import { Octokit } from "octokit";
 import { createAppAuth } from "@octokit/auth-app";
 import { config } from "../env";
-import { analyzePullRequestPatchesWithConfig, Finding } from "../analysis/analyzer";
+import {
+  analyzePullRequestPatchesWithConfig,
+  Finding,
+  analyzeRepository,
+  BaselineAnalysisResult,
+} from "../analysis/analyzer";
 import {
   analyzeSnippetWithLlm,
   LlmAnalysisResult,
@@ -293,49 +298,80 @@ function buildHighRiskCommentBody(params: {
   llmIssues: LlmIssue[];
   vibeScore: number;
   vibeLabel: string;
+  archSummary?: ArchitectureRiskSummary;
 }): string | null {
-  const { staticFindings, llmIssues, vibeScore, vibeLabel } = params;
+  const { staticFindings, llmIssues, vibeScore, vibeLabel, archSummary } = params;
 
   const highStatic = staticFindings.filter((f) => f.severity === "high");
   const highLlm = llmIssues.filter((i) => i.severity === "high");
 
-  if (highStatic.length === 0 && highLlm.length === 0) {
+  // Show comment if there are high-risk findings OR if score is below 60
+  const hasHighRisk = highStatic.length > 0 || highLlm.length > 0;
+  const isRiskyScore = vibeScore < 60;
+
+  if (!hasHighRisk && !isRiskyScore) {
     return null;
   }
 
-  let body = `🚨 **Vibe Scan high-risk summary**\n\n`;
-  body += `Vibe Score: **${vibeScore} (${vibeLabel})**\n\n`;
-  body += `These findings look risky for production and deserve extra attention before merging.\n\n`;
+  let body = `🚨 **Vibe Scan Summary**\n\n`;
+  body += `**Vibe Score: ${vibeScore} (${vibeLabel})**\n\n`;
 
+  // Add compact architecture summary at the top
+  if (archSummary) {
+    const categories: { emoji: string; name: string; data: { count: number; topIssues: ArchIssue[] } }[] = [
+      { emoji: "📈", name: "Scaling", data: archSummary.scaling },
+      { emoji: "🔀", name: "Concurrency", data: archSummary.concurrency },
+      { emoji: "⚠️", name: "Errors", data: archSummary.errorHandling },
+      { emoji: "📋", name: "Data", data: archSummary.dataIntegrity },
+    ];
+
+    const activeCategories = categories.filter((c) => c.data.count > 0);
+    if (activeCategories.length > 0) {
+      for (const cat of activeCategories) {
+        body += `${cat.emoji} **${cat.name}** (${cat.data.count})`;
+        if (cat.data.topIssues.length > 0) {
+          const top = cat.data.topIssues[0];
+          const loc = top.line ? `${top.file}:${top.line}` : top.file;
+          body += ` – \`${loc}\` ${top.snippet}`;
+          if (cat.data.count > 1) {
+            body += ` _+${cat.data.count - 1} more_`;
+          }
+        }
+        body += `\n`;
+      }
+      body += `\n`;
+    }
+  }
+
+  // High-risk details (if any)
   if (highStatic.length) {
-    body += `### ⚠️ Static analysis high-risk findings\n\n`;
+    body += `<details><summary>⚠️ ${highStatic.length} high-risk static finding(s)</summary>\n\n`;
     highStatic.slice(0, 5).forEach((f) => {
       const location = f.line ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``;
-      body += `- ${location} **(${f.kind})** – ${f.message}\n`;
+      body += `- ${location} **${RULE_DESCRIPTIONS[f.kind] || f.kind}**\n`;
     });
     if (highStatic.length > 5) {
-      body += `\n…and ${highStatic.length - 5} more static high-risk finding(s).\n`;
+      body += `\n…and ${highStatic.length - 5} more.\n`;
     }
-    body += `\n`;
+    body += `\n</details>\n\n`;
   }
 
   if (highLlm.length) {
-    body += `### 🤖 AI (LLM) high-risk findings\n\n`;
+    body += `<details><summary>🤖 ${highLlm.length} high-risk AI finding(s)</summary>\n\n`;
     highLlm.slice(0, 5).forEach((issue) => {
-      const kindLabel = LLM_ISSUE_KIND_LABELS[issue.kind];
-      body += `- **(${kindLabel}) ${issue.title}** – ${issue.summary}`;
+      body += `- **${issue.title}** – ${issue.summary}`;
       if (issue.suggestedFix) {
-        body += ` 💡 _Suggested fix:_ ${issue.suggestedFix}`;
+        body += ` 💡 ${issue.suggestedFix}`;
       }
       body += `\n`;
     });
     if (highLlm.length > 5) {
-      body += `\n…and ${highLlm.length - 5} more AI high-risk issue(s).\n`;
+      body += `\n…and ${highLlm.length - 5} more.\n`;
     }
+    body += `\n</details>\n`;
   }
 
-  body += `\n---\n`;
-  body += `_(Vibe Scan combines static checks + AI analysis. Treat this as an advisory production-risk review.)_`;
+  body += `\n_See check run for full details._`;
 
   return body;
 }
@@ -367,13 +403,23 @@ async function postHighRiskComment(params: {
 // ============================================================================
 
 /**
+ * A condensed issue for architecture summary display.
+ */
+interface ArchIssue {
+  file: string;
+  line?: number;
+  snippet: string;
+  kind: string;
+}
+
+/**
  * Categories for architecture risk summary.
  */
 interface ArchitectureRiskSummary {
-  scaling: { count: number; kinds: string[] };
-  concurrency: { count: number; kinds: string[] };
-  errorHandling: { count: number; kinds: string[] };
-  dataIntegrity: { count: number; kinds: string[] };
+  scaling: { count: number; topIssues: ArchIssue[] };
+  concurrency: { count: number; topIssues: ArchIssue[] };
+  errorHandling: { count: number; topIssues: ArchIssue[] };
+  dataIntegrity: { count: number; topIssues: ArchIssue[] };
 }
 
 /**
@@ -411,9 +457,35 @@ const DATA_INTEGRITY_KINDS = new Set([
   "HIDDEN_ASSUMPTIONS",
 ]);
 
+/** Max top issues to show per category */
+const MAX_TOP_ISSUES_PER_CATEGORY = 2;
+
+/**
+ * Human-readable descriptions for rule kinds.
+ */
+const RULE_DESCRIPTIONS: Record<string, string> = {
+  UNBOUNDED_QUERY: "Query without limit",
+  LOOPED_IO: "I/O call in loop (N+1)",
+  MEMORY_RISK: "Loading large data into memory",
+  GLOBAL_MUTATION: "Mutable global state",
+  CHECK_THEN_ACT_RACE: "Race condition (check-then-act)",
+  SILENT_ERROR: "Error swallowed silently",
+  UNSAFE_IO: "Network call without error handling",
+  STATEFUL_SERVICE: "In-memory state (breaks scaling)",
+  PROTOTYPE_INFRA: "Non-production infrastructure",
+  HARDCODED_SECRET: "Hardcoded credential",
+  UNSAFE_EVAL: "Dynamic code execution",
+  SCALING_RISK: "Scaling concern",
+  CONCURRENCY_RISK: "Concurrency issue",
+  RESILIENCE_GAP: "Missing fault tolerance",
+  OBSERVABILITY_GAP: "Missing observability",
+  DATA_CONTRACT_RISK: "Data validation issue",
+  ENVIRONMENT_ASSUMPTION: "Environment-specific code",
+};
+
 /**
  * Compute an architecture risk summary from static findings and LLM issues.
- * Groups findings into risk categories for cross-file analysis.
+ * Groups findings into risk categories and captures top issues for display.
  */
 function computeArchitectureRiskSummary(params: {
   staticFindings: Finding[];
@@ -421,78 +493,93 @@ function computeArchitectureRiskSummary(params: {
 }): ArchitectureRiskSummary {
   const { staticFindings, llmIssues } = params;
 
-  const summary: ArchitectureRiskSummary = {
-    scaling: { count: 0, kinds: [] },
-    concurrency: { count: 0, kinds: [] },
-    errorHandling: { count: 0, kinds: [] },
-    dataIntegrity: { count: 0, kinds: [] },
-  };
+  // Collect issues by category
+  const scalingIssues: ArchIssue[] = [];
+  const concurrencyIssues: ArchIssue[] = [];
+  const errorHandlingIssues: ArchIssue[] = [];
+  const dataIntegrityIssues: ArchIssue[] = [];
 
-  const scalingKindsFound = new Set<string>();
-  const concurrencyKindsFound = new Set<string>();
-  const errorHandlingKindsFound = new Set<string>();
-  const dataIntegrityKindsFound = new Set<string>();
+  // Helper to convert finding to ArchIssue
+  const toArchIssue = (f: Finding): ArchIssue => ({
+    file: f.file,
+    line: f.line,
+    snippet: RULE_DESCRIPTIONS[f.kind] || f.kind,
+    kind: f.kind,
+  });
 
-  // Categorize static findings
-  for (const f of staticFindings) {
+  // Helper to convert LLM issue to ArchIssue
+  const llmToArchIssue = (issue: LlmIssue): ArchIssue => ({
+    file: issue.file || "unknown",
+    line: issue.line,
+    snippet: issue.title || RULE_DESCRIPTIONS[issue.kind] || issue.kind,
+    kind: issue.kind,
+  });
+
+  // Categorize static findings (prioritize high severity)
+  const sortedFindings = [...staticFindings].sort((a, b) => {
+    const severityOrder = { high: 0, medium: 1, low: 2 };
+    return (severityOrder[a.severity] || 2) - (severityOrder[b.severity] || 2);
+  });
+
+  for (const f of sortedFindings) {
     if (SCALING_KINDS.has(f.kind)) {
-      summary.scaling.count++;
-      scalingKindsFound.add(f.kind);
+      scalingIssues.push(toArchIssue(f));
     } else if (CONCURRENCY_KINDS.has(f.kind)) {
-      summary.concurrency.count++;
-      concurrencyKindsFound.add(f.kind);
+      concurrencyIssues.push(toArchIssue(f));
     } else if (ERROR_HANDLING_KINDS.has(f.kind)) {
-      summary.errorHandling.count++;
-      errorHandlingKindsFound.add(f.kind);
+      errorHandlingIssues.push(toArchIssue(f));
     } else if (DATA_INTEGRITY_KINDS.has(f.kind)) {
-      summary.dataIntegrity.count++;
-      dataIntegrityKindsFound.add(f.kind);
+      dataIntegrityIssues.push(toArchIssue(f));
     }
   }
 
-  // Categorize LLM issues using the new simplified kind system
+  // Categorize LLM issues
   for (const issue of llmIssues) {
+    const archIssue = llmToArchIssue(issue);
     switch (issue.kind) {
       case "SCALING_RISK":
-        summary.scaling.count++;
-        scalingKindsFound.add(issue.kind);
+      case "ENVIRONMENT_ASSUMPTION":
+        scalingIssues.push(archIssue);
         break;
       case "CONCURRENCY_RISK":
-        summary.concurrency.count++;
-        concurrencyKindsFound.add(issue.kind);
+        concurrencyIssues.push(archIssue);
         break;
       case "RESILIENCE_GAP":
       case "OBSERVABILITY_GAP":
-        // Resilience and observability map to error handling
-        summary.errorHandling.count++;
-        errorHandlingKindsFound.add(issue.kind);
+        errorHandlingIssues.push(archIssue);
         break;
       case "DATA_CONTRACT_RISK":
-        summary.dataIntegrity.count++;
-        dataIntegrityKindsFound.add(issue.kind);
-        break;
-      case "ENVIRONMENT_ASSUMPTION":
-        // Environment assumptions often manifest as scaling issues
-        summary.scaling.count++;
-        scalingKindsFound.add(issue.kind);
+        dataIntegrityIssues.push(archIssue);
         break;
     }
   }
 
-  summary.scaling.kinds = Array.from(scalingKindsFound);
-  summary.concurrency.kinds = Array.from(concurrencyKindsFound);
-  summary.errorHandling.kinds = Array.from(errorHandlingKindsFound);
-  summary.dataIntegrity.kinds = Array.from(dataIntegrityKindsFound);
-
-  return summary;
+  return {
+    scaling: {
+      count: scalingIssues.length,
+      topIssues: scalingIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+    concurrency: {
+      count: concurrencyIssues.length,
+      topIssues: concurrencyIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+    errorHandling: {
+      count: errorHandlingIssues.length,
+      topIssues: errorHandlingIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+    dataIntegrity: {
+      count: dataIntegrityIssues.length,
+      topIssues: dataIntegrityIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
+  };
 }
 
 /**
  * Build a markdown section for the architecture risk summary.
+ * Shows top issues with locations, not just counts.
  */
 function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string {
   let text = "## Architecture Risk Summary\n\n";
-  text += "Cross-file analysis of production risk patterns:\n\n";
 
   const hasAnyRisks =
     summary.scaling.count > 0 ||
@@ -501,24 +588,34 @@ function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string 
     summary.dataIntegrity.count > 0;
 
   if (!hasAnyRisks) {
-    text += "_No major architectural risk patterns detected across this PR._\n";
+    text += "_No major architectural risk patterns detected._\n";
     return text;
   }
 
-  if (summary.scaling.count > 0) {
-    text += `| **Scaling** | ${summary.scaling.count} issue(s) | ${summary.scaling.kinds.join(", ")} |\n`;
-  }
-  if (summary.concurrency.count > 0) {
-    text += `| **Concurrency** | ${summary.concurrency.count} issue(s) | ${summary.concurrency.kinds.join(", ")} |\n`;
-  }
-  if (summary.errorHandling.count > 0) {
-    text += `| **Error Handling** | ${summary.errorHandling.count} issue(s) | ${summary.errorHandling.kinds.join(", ")} |\n`;
-  }
-  if (summary.dataIntegrity.count > 0) {
-    text += `| **Data Integrity** | ${summary.dataIntegrity.count} issue(s) | ${summary.dataIntegrity.kinds.join(", ")} |\n`;
-  }
+  // Helper to format a category
+  const formatCategory = (
+    emoji: string,
+    name: string,
+    data: { count: number; topIssues: ArchIssue[] }
+  ): string => {
+    if (data.count === 0) return "";
 
-  text += "\n";
+    let section = `**${emoji} ${name}** (${data.count})\n`;
+    for (const issue of data.topIssues) {
+      const loc = issue.line ? `${issue.file}:${issue.line}` : issue.file;
+      section += `- \`${loc}\` ${issue.snippet}\n`;
+    }
+    if (data.count > data.topIssues.length) {
+      section += `- _+${data.count - data.topIssues.length} more_\n`;
+    }
+    return section + "\n";
+  };
+
+  text += formatCategory("📈", "Scaling", summary.scaling);
+  text += formatCategory("🔀", "Concurrency", summary.concurrency);
+  text += formatCategory("⚠️", "Error Handling", summary.errorHandling);
+  text += formatCategory("📋", "Data Integrity", summary.dataIntegrity);
+
   return text;
 }
 
@@ -653,6 +750,7 @@ export function registerEventHandlers(): void {
             staticFindings: fileFindings,
             fullContent,
             fileStructure,
+            installationId,
           });
 
           if (!result) {
@@ -777,6 +875,7 @@ export function registerEventHandlers(): void {
         llmIssues,
         vibeScore,
         vibeLabel,
+        archSummary,
       });
 
       if (commentBody) {
@@ -803,5 +902,295 @@ export function registerEventHandlers(): void {
     console.log(`[GitHub App] Received ${name} event (id: ${id}):`, payload.action);
   });
 
+  // ============================================================================
+  // Phase 2: Installation Baseline Scan
+  // ============================================================================
+
+  webhooks.on("installation.created", async ({ id, name, payload }) => {
+    console.log(`[GitHub App] Received ${name} event (id: ${id}): App installed on ${payload.repositories?.length ?? 0} repository(ies)`);
+
+    const installationId = payload.installation.id;
+    const repositories = payload.repositories ?? [];
+
+    // Get owner from account (handle both user and org)
+    const account = payload.installation.account;
+    const owner = account && "login" in account ? account.login : null;
+
+    if (!owner) {
+      console.warn("[GitHub App] Could not determine owner, skipping baseline scan");
+      return;
+    }
+
+    if (!repositories.length) {
+      console.log("[GitHub App] No repositories in installation event, skipping baseline scan");
+      return;
+    }
+
+    // Process each repository
+    for (const repo of repositories) {
+      try {
+        await performBaselineScan({
+          installationId,
+          owner,
+          repoName: repo.name,
+          repoFullName: repo.full_name,
+        });
+      } catch (error) {
+        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error);
+      }
+    }
+  });
+
+  // Handle when repos are added to existing installation
+  webhooks.on("installation_repositories.added", async ({ id, name, payload }) => {
+    console.log(`[GitHub App] Received ${name} event (id: ${id}): ${payload.repositories_added?.length ?? 0} repository(ies) added`);
+
+    const installationId = payload.installation.id;
+    const repositories = payload.repositories_added ?? [];
+
+    const account = payload.installation.account;
+    const owner = account && "login" in account ? account.login : null;
+
+    if (!owner) {
+      console.warn("[GitHub App] Could not determine owner, skipping baseline scan");
+      return;
+    }
+
+    for (const repo of repositories) {
+      try {
+        await performBaselineScan({
+          installationId,
+          owner,
+          repoName: repo.name,
+          repoFullName: repo.full_name,
+        });
+      } catch (error) {
+        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error);
+      }
+    }
+  });
+
   console.log("[GitHub App] Event handlers registered");
+}
+
+// ============================================================================
+// Baseline Scan Implementation
+// ============================================================================
+
+const BASELINE_MAX_FILE_SIZE = 100 * 1024; // 100KB
+const BASELINE_MAX_FILES = 200;
+
+interface BaselineScanParams {
+  installationId: number;
+  owner: string;
+  repoName: string;
+  repoFullName: string;
+}
+
+/**
+ * Perform baseline scan on a repository when the app is installed.
+ * Creates an issue with the Vibe Score and findings.
+ */
+async function performBaselineScan(params: BaselineScanParams): Promise<void> {
+  const { installationId, owner, repoName, repoFullName } = params;
+
+  console.log(`[Baseline] Starting baseline scan for ${repoFullName}...`);
+
+  const octokit = createInstallationOctokit(installationId);
+
+  try {
+    // Get default branch
+    const repoInfo = await octokit.request("GET /repos/{owner}/{repo}", {
+      owner,
+      repo: repoName,
+    });
+    const defaultBranch = repoInfo.data.default_branch;
+    console.log(`[Baseline] Default branch: ${defaultBranch}`);
+
+    // Fetch config
+    const vibescanConfig = await fetchRepoConfig(octokit, owner, repoName, defaultBranch, defaultBranch);
+
+    // Get file tree
+    const treeResponse = await octokit.request("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", {
+      owner,
+      repo: repoName,
+      tree_sha: defaultBranch,
+      recursive: "true",
+    });
+
+    // Filter to code files
+    const codeFileExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rb", ".java", ".cs"]);
+    const codeFiles = treeResponse.data.tree.filter((item: { type?: string; path?: string; size?: number }) => {
+      if (item.type !== "blob") return false;
+      if (!item.path) return false;
+      const ext = item.path.substring(item.path.lastIndexOf("."));
+      if (!codeFileExtensions.has(ext)) return false;
+      // Skip test files
+      if (item.path.includes("/test/") || item.path.includes("/tests/") || item.path.includes("__tests__")) return false;
+      if (item.path.includes(".test.") || item.path.includes(".spec.") || item.path.includes("_test.")) return false;
+      // Skip vendor/node_modules
+      if (item.path.includes("node_modules/") || item.path.includes("vendor/") || item.path.includes("dist/")) return false;
+      if (item.size && item.size > BASELINE_MAX_FILE_SIZE) return false;
+      return true;
+    });
+
+    console.log(`[Baseline] Found ${codeFiles.length} code files (excluding tests)`);
+
+    // Limit files
+    const filesToAnalyze = codeFiles.slice(0, BASELINE_MAX_FILES);
+
+    // Fetch file contents with batching (intentional loop pattern for rate limiting)
+    // vibescan-ignore-next-line LOOPED_IO
+    const fileContents = new Map<string, string>();
+    const batchSize = 10;
+
+    for (let i = 0; i < filesToAnalyze.length; i += batchSize) {
+      const batch = filesToAnalyze.slice(i, i + batchSize);
+      const promises = batch.map(async (file: { path?: string }) => {
+        if (!file.path) return;
+        try {
+          const content = await fetchFileContent(octokit, owner, repoName, file.path, defaultBranch);
+          if (content) {
+            fileContents.set(file.path, content);
+          }
+        } catch (err) {
+          // Individual file failures shouldn't stop the scan
+          console.warn(`[Baseline] Failed to fetch ${file.path}:`, err);
+        }
+      });
+      await Promise.all(promises);
+    }
+
+    console.log(`[Baseline] Fetched ${fileContents.size}/${filesToAnalyze.length} file(s)`);
+
+    // Run analysis
+    const baselineResult: BaselineAnalysisResult = analyzeRepository(fileContents, {
+      config: vibescanConfig,
+    });
+
+    console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
+
+    // Compute Vibe Score
+    const vibeScoreResult = computeVibeScore({
+      staticFindings: baselineResult.findings,
+      llmIssues: [],
+      options: { scoringConfig: vibescanConfig.scoring },
+    });
+
+    // Create issue
+    const issueBody = buildBaselineIssueBody({
+      vibeScore: vibeScoreResult.score,
+      vibeLabel: vibeScoreResult.label,
+      findings: baselineResult.findings,
+      filesAnalyzed: baselineResult.filesAnalyzed,
+      filesSkipped: baselineResult.filesSkipped,
+      truncated: baselineResult.truncated,
+      totalCodeFiles: codeFiles.length,
+    });
+
+    await octokit.request("POST /repos/{owner}/{repo}/issues", {
+      owner,
+      repo: repoName,
+      title: `Vibe Scan Baseline: Score ${vibeScoreResult.score}/100 (${vibeScoreResult.label})`,
+      body: issueBody,
+      labels: ["vibe-scan", "baseline"],
+    });
+
+    console.log(`[Baseline] Created baseline issue for ${repoFullName}`);
+  } catch (error) {
+    console.error(`[Baseline] Error scanning ${repoFullName}:`, error);
+    throw error; // Re-throw so caller knows it failed
+  }
+}
+
+/**
+ * Build markdown body for baseline scan issue.
+ */
+function buildBaselineIssueBody(params: {
+  vibeScore: number;
+  vibeLabel: string;
+  findings: Finding[];
+  filesAnalyzed: number;
+  filesSkipped: number;
+  truncated: boolean;
+  totalCodeFiles: number;
+}): string {
+  const { vibeScore, vibeLabel, findings, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
+
+  let body = `# Vibe Scan Baseline Report\n\n`;
+  body += `Welcome to Vibe Scan! This is your baseline production readiness assessment.\n\n`;
+
+  // Score
+  body += `## Vibe Score: **${vibeScore}/100** (${vibeLabel})\n\n`;
+
+  if (vibeScore >= 90) {
+    body += `Excellent! Your codebase looks production-ready.\n\n`;
+  } else if (vibeScore >= 75) {
+    body += `Good! Minor improvements recommended before scaling.\n\n`;
+  } else if (vibeScore >= 60) {
+    body += `Moderate Risk - Several issues should be addressed before production.\n\n`;
+  } else if (vibeScore >= 40) {
+    body += `Risky - Significant concerns that could cause production failures.\n\n`;
+  } else {
+    body += `Critical Risk - Major architectural issues detected. Not recommended for production.\n\n`;
+  }
+
+  // Stats
+  body += `### Analysis Stats\n`;
+  body += `- **Files Analyzed:** ${filesAnalyzed} of ${totalCodeFiles}\n`;
+  if (filesSkipped > 0) {
+    body += `- **Files Skipped:** ${filesSkipped}\n`;
+  }
+  if (truncated) {
+    body += `- *Analysis was truncated at ${filesAnalyzed} files*\n`;
+  }
+  body += `- **Issues Found:** ${findings.length}\n\n`;
+
+  // Findings summary
+  if (findings.length > 0) {
+    const high = findings.filter((f) => f.severity === "high");
+    const medium = findings.filter((f) => f.severity === "medium");
+    const low = findings.filter((f) => f.severity === "low");
+
+    body += `## Findings Summary\n\n`;
+    body += `| Severity | Count |\n|----------|-------|\n`;
+    body += `| High | ${high.length} |\n`;
+    body += `| Medium | ${medium.length} |\n`;
+    body += `| Low | ${low.length} |\n\n`;
+
+    // High severity details
+    if (high.length > 0) {
+      body += `### High Severity Issues\n\n`;
+
+      const byKind = new Map<string, Finding[]>();
+      for (const f of high) {
+        if (!byKind.has(f.kind)) byKind.set(f.kind, []);
+        byKind.get(f.kind)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        body += `**${kind}** (${kindFindings.length})\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+  } else {
+    body += `## No Issues Found\n\nNo critical production risks were detected.\n\n`;
+  }
+
+  // Next steps
+  body += `## Next Steps\n\n`;
+  body += `1. Review the findings above and prioritize high-severity issues\n`;
+  body += `2. Configure Vibe Scan by adding a \`.vibescan.yml\` file\n`;
+  body += `3. PRs will be analyzed automatically\n\n`;
+
+  body += `---\n_Baseline scan from Vibe Scan installation._\n`;
+
+  return body;
 }

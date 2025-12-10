@@ -750,6 +750,132 @@ export interface AnalysisOptions {
   fileContents?: Map<string, string>;
 }
 
+// ============================================================================
+// Full File Scanning for Critical Issues (Phase 1)
+// ============================================================================
+
+/**
+ * Critical rules that should be checked against the entire file,
+ * not just the changed lines. These are architectural issues that
+ * indicate production risks regardless of what was changed in the PR.
+ */
+const CRITICAL_FULL_FILE_RULES = new Set<string>([
+  "STATEFUL_SERVICE",
+  "PROTOTYPE_INFRA",
+  "HARDCODED_SECRET",
+  "UNSAFE_EVAL",
+  "GLOBAL_MUTATION",
+]);
+
+/**
+ * Analyze entire file content for critical issues.
+ * Used for detecting architectural problems that exist anywhere in a touched file,
+ * not just in the changed lines.
+ *
+ * @param filename - The file path
+ * @param content - The full file content
+ * @param options - Optional: specific rules to check (defaults to CRITICAL_FULL_FILE_RULES)
+ * @returns Array of findings for critical issues found anywhere in the file
+ */
+export function analyzeFileContent(
+  filename: string,
+  content: string,
+  options?: { rulesToCheck?: Set<string> }
+): Finding[] {
+  const rulesToCheck = options?.rulesToCheck ?? CRITICAL_FULL_FILE_RULES;
+  const findings: Finding[] = [];
+  const lines = content.split("\n");
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineNumber = i + 1;
+    const contextLines = lines.slice(Math.max(0, i - 3), Math.min(lines.length, i + 4));
+
+    // STATEFUL_SERVICE detection
+    if (rulesToCheck.has("STATEFUL_SERVICE")) {
+      if (matchesAnyPattern(line, STATEFUL_SERVICE_PATTERNS)) {
+        findings.push({
+          kind: "STATEFUL_SERVICE",
+          file: filename,
+          line: lineNumber,
+          severity: "high",
+          message: "In-memory state detected - breaks horizontal scaling",
+          snippet: line.trim(),
+        });
+      }
+    }
+
+    // PROTOTYPE_INFRA detection
+    if (rulesToCheck.has("PROTOTYPE_INFRA")) {
+      if (matchesAnyPattern(line, PROTOTYPE_INFRA_PATTERNS)) {
+        findings.push({
+          kind: "PROTOTYPE_INFRA",
+          file: filename,
+          line: lineNumber,
+          severity: "high",
+          message: "Prototype infrastructure detected - won't scale in production",
+          snippet: line.trim(),
+        });
+      }
+    }
+
+    // HARDCODED_SECRET detection
+    if (rulesToCheck.has("HARDCODED_SECRET")) {
+      if (matchesAnyPattern(line, SECRET_PATTERNS)) {
+        // Don't flag in test files
+        if (!isTestFile(filename)) {
+          findings.push({
+            kind: "HARDCODED_SECRET",
+            file: filename,
+            line: lineNumber,
+            severity: "high",
+            message: "Possible hardcoded secret or credential",
+            snippet: line.trim().substring(0, 80) + (line.length > 80 ? "..." : ""),
+          });
+        }
+      }
+    }
+
+    // UNSAFE_EVAL detection
+    if (rulesToCheck.has("UNSAFE_EVAL")) {
+      if (matchesAnyPattern(line, UNSAFE_EVAL_PATTERNS)) {
+        findings.push({
+          kind: "UNSAFE_EVAL",
+          file: filename,
+          line: lineNumber,
+          severity: "high",
+          message: "Dangerous code evaluation detected - security risk",
+          snippet: line.trim(),
+        });
+      }
+    }
+
+    // GLOBAL_MUTATION detection (simplified - AST check is more accurate)
+    // We only check for obvious patterns like module-level let/var with objects/arrays
+    if (rulesToCheck.has("GLOBAL_MUTATION")) {
+      // Check for module-level let/var declarations (not inside functions/classes)
+      // Pattern: starts at column 0, uses let/var with mutable initializers
+      if (/^(let|var)\s+\w+\s*=\s*(new\s+(Map|Set|Array)|{|\[)/.test(line)) {
+        findings.push({
+          kind: "GLOBAL_MUTATION",
+          file: filename,
+          line: lineNumber,
+          severity: "medium",
+          message: "Module-level mutable state - may cause bugs with concurrent requests",
+          snippet: line.trim(),
+        });
+      }
+    }
+  }
+
+  // Limit findings per file
+  return findings.slice(0, MAX_FINDINGS_PER_FILE);
+}
+
+// ============================================================================
+// PR Analysis with Config
+// ============================================================================
+
 /**
  * Analyze all PR files with config and suppression support.
  *
@@ -760,6 +886,7 @@ export interface AnalysisOptions {
  * - Per-path rule overrides
  * - Inline suppression directives
  * - Hybrid AST + regex analysis (when fileContents provided)
+ * - Full file scan for critical issues (Phase 1)
  *
  * @param files - Array of files with filename and patch content
  * @param options - Analysis options including config and optional file contents
@@ -859,6 +986,38 @@ export function analyzePullRequestPatchesWithConfig(
       }
     }
 
+    // ========================================================================
+    // PHASE 1: Full file scan for critical issues
+    // ========================================================================
+    // When we have file content, scan the ENTIRE file for critical architectural
+    // issues, not just the changed lines. This catches problems like:
+    // - STATEFUL_SERVICE: in-memory state anywhere in the file
+    // - PROTOTYPE_INFRA: SQLite/file-based DBs anywhere
+    // - HARDCODED_SECRET: credentials anywhere
+    // - UNSAFE_EVAL: dangerous code execution anywhere
+    //
+    // These are merged with patch findings and deduplicated.
+    let fullFileFindings: Finding[] = [];
+    if (content) {
+      fullFileFindings = analyzeFileContent(file.filename, content);
+
+      // Deduplicate: remove full file findings that are already in patch findings
+      // (same file:line:kind)
+      const patchFindingKeys = new Set(
+        rawFindings.map((f) => `${f.file}:${f.line}:${f.kind}`)
+      );
+      fullFileFindings = fullFileFindings.filter(
+        (f) => !patchFindingKeys.has(`${f.file}:${f.line}:${f.kind}`)
+      );
+
+      // Merge: add full file findings to raw findings
+      rawFindings = [...rawFindings, ...fullFileFindings];
+
+      console.log(
+        `[Analyzer] Full file scan for ${file.filename}: ${fullFileFindings.length} critical + ${rawFindings.length - fullFileFindings.length} patch -> ${rawFindings.length} total`
+      );
+    }
+
     // Parse suppression directives from the patch content
     // Note: We extract added lines from the patch for suppression parsing
     const patchContent = extractAddedLinesFromPatch(file.patch);
@@ -904,6 +1063,153 @@ export function analyzePullRequestPatchesWithConfig(
   }
 
   return allFindings;
+}
+
+// ============================================================================
+// Phase 2: Baseline Repository Scan
+// ============================================================================
+
+/**
+ * Rules to check during baseline repository scan.
+ * More comprehensive than PR analysis since we're doing a one-time baseline.
+ */
+const BASELINE_SCAN_RULES = new Set<string>([
+  // Critical architecture issues
+  "STATEFUL_SERVICE",
+  "PROTOTYPE_INFRA",
+  "GLOBAL_MUTATION",
+  // Security issues
+  "HARDCODED_SECRET",
+  "UNSAFE_EVAL",
+  "HARDCODED_URL",
+  // Scaling issues
+  "UNBOUNDED_QUERY",
+  "LOOPED_IO",
+  "MEMORY_RISK",
+  // Error handling issues
+  "UNSAFE_IO",
+  "SILENT_ERROR",
+]);
+
+/**
+ * Result of baseline repository analysis.
+ */
+export interface BaselineAnalysisResult {
+  /** All findings from the baseline scan */
+  findings: Finding[];
+  /** Number of files analyzed */
+  filesAnalyzed: number;
+  /** Number of files skipped (ignored by config or not code) */
+  filesSkipped: number;
+  /** Whether the scan was truncated due to maxFiles limit */
+  truncated: boolean;
+}
+
+/**
+ * Options for baseline repository analysis.
+ */
+export interface BaselineAnalysisOptions {
+  /** The loaded configuration. If not provided, uses defaults. */
+  config?: LoadedConfig;
+  /** Maximum number of files to analyze (default: 200) */
+  maxFiles?: number;
+  /** Set of rule kinds to check. Defaults to BASELINE_SCAN_RULES. */
+  rulesToCheck?: Set<string>;
+}
+
+/**
+ * Analyze an entire repository to establish a baseline Vibe Score.
+ *
+ * Used when the GitHub App is first installed to give users an
+ * immediate picture of their codebase's production readiness.
+ *
+ * @param fileContents - Map of file paths to their content
+ * @param options - Analysis options
+ * @returns BaselineAnalysisResult with findings and stats
+ */
+export function analyzeRepository(
+  fileContents: Map<string, string>,
+  options: BaselineAnalysisOptions = {}
+): BaselineAnalysisResult {
+  const config = options.config ?? createDefaultConfig();
+  const maxFiles = options.maxFiles ?? 200;
+  const rulesToCheck = options.rulesToCheck ?? BASELINE_SCAN_RULES;
+
+  const allFindings: Finding[] = [];
+  let filesAnalyzed = 0;
+  let filesSkipped = 0;
+  let truncated = false;
+
+  for (const [filepath, content] of fileContents) {
+    // Check file limit
+    if (filesAnalyzed >= maxFiles) {
+      truncated = true;
+      break;
+    }
+
+    // Only analyze code files
+    if (!isCodeFile(filepath)) {
+      filesSkipped++;
+      continue;
+    }
+
+    // Check if file is ignored by config
+    if (config.isFileIgnored(filepath)) {
+      filesSkipped++;
+      continue;
+    }
+
+    filesAnalyzed++;
+
+    // Parse suppression directives from the full file content
+    const suppressions = parseSuppressionDirectives(content);
+
+    // Check if file is in prototype zone
+    const isInPrototypeZone = config.isPrototypeZone(filepath);
+
+    // Run full-file analysis with specified rules
+    const rawFindings = analyzeFileContent(filepath, content, { rulesToCheck });
+
+    // Filter and enrich findings with config/suppression
+    for (const finding of rawFindings) {
+      if (isValidRuleId(finding.kind)) {
+        const ruleConfig = config.getRuleConfig(finding.kind as RuleId, filepath);
+
+        // Skip if rule is disabled or level is "off"
+        if (!ruleConfig.enabled || ruleConfig.level === "off") {
+          continue;
+        }
+
+        // Check inline suppressions
+        if (finding.line && isSuppressed(finding.kind as RuleId, finding.line, suppressions)) {
+          continue;
+        }
+
+        // Enrich finding with level and prototype zone info
+        allFindings.push({
+          ...finding,
+          level: ruleConfig.level,
+          isPrototypeZone: isInPrototypeZone,
+        });
+      } else {
+        // For non-standard rule kinds, only apply file-scope ALL suppression
+        const hasAllSuppression = suppressions.some((s) => s.scope === "file" && s.allRules);
+        if (!hasAllSuppression) {
+          allFindings.push({
+            ...finding,
+            isPrototypeZone: isInPrototypeZone,
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    findings: allFindings,
+    filesAnalyzed,
+    filesSkipped,
+    truncated,
+  };
 }
 
 /**

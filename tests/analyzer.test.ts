@@ -2,7 +2,7 @@
  * Unit tests for the core static analysis logic.
  */
 
-import { analyzePatch, analyzePullRequestPatchesWithConfig, createDefaultConfig } from "../src/analysis/analyzer";
+import { analyzePatch, analyzePullRequestPatchesWithConfig, createDefaultConfig, analyzeFileContent, analyzeRepository } from "../src/analysis/analyzer";
 
 describe("analyzePatch", () => {
   describe("UNBOUNDED_QUERY detection", () => {
@@ -663,5 +663,314 @@ describe("HARDCODED_URL detection", () => {
     const findings = analyzePatch("src/api.test.ts", patch);
 
     expect(findings.some((f) => f.kind === "HARDCODED_URL")).toBe(false);
+  });
+});
+
+// ============================================================================
+// Phase 1: Full File Scan Tests
+// ============================================================================
+
+describe("analyzeFileContent - Full File Scan", () => {
+  it("should detect STATEFUL_SERVICE in full file content", () => {
+    const content = `class RateLimiter {
+  constructor() {
+    this.requests = new Map();
+  }
+
+  check(ip) {
+    return this.requests.get(ip);
+  }
+}`;
+
+    const findings = analyzeFileContent("src/rateLimiter.ts", content);
+
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+    const finding = findings.find((f) => f.kind === "STATEFUL_SERVICE");
+    expect(finding?.line).toBe(3);
+    expect(finding?.severity).toBe("high");
+  });
+
+  it("should detect PROTOTYPE_INFRA in full file content", () => {
+    const content = `const sqlite3 = require('sqlite3');
+const db = new sqlite3.Database('./data.db');
+
+function getUsers() {
+  return db.all('SELECT * FROM users');
+}`;
+
+    const findings = analyzeFileContent("src/database.js", content);
+
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should detect UNSAFE_EVAL in full file content", () => {
+    const content = `function runCode(code) {
+  // This is dangerous
+  return eval(code);
+}
+
+function safe() {
+  return "hello";
+}`;
+
+    const findings = analyzeFileContent("src/executor.ts", content);
+
+    expect(findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
+    const finding = findings.find((f) => f.kind === "UNSAFE_EVAL");
+    expect(finding?.line).toBe(3);
+  });
+
+  it("should NOT detect HARDCODED_SECRET in test files", () => {
+    const content = `const API_KEY = 'sk_test_123456';
+const SECRET = 'password123';`;
+
+    const findings = analyzeFileContent("src/api.test.ts", content);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_SECRET")).toBe(false);
+  });
+
+  it("should detect HARDCODED_SECRET in non-test files", () => {
+    const content = `const API_KEY = 'my_secret_api_key_do_not_commit';`;
+
+    const findings = analyzeFileContent("src/api.ts", content);
+
+    expect(findings.some((f) => f.kind === "HARDCODED_SECRET")).toBe(true);
+  });
+});
+
+describe("Full file scan integration with PR analysis", () => {
+  it("should detect STATEFUL_SERVICE anywhere in file, not just changed lines", () => {
+    // File has STATEFUL_SERVICE on line 4, but we only change line 18-20
+    const fileContent = `class RateLimiter {
+  constructor() {
+    // Critical issue here on line 4
+    this.requests = new Map();
+  }
+
+  check(ip) {
+    const req = this.requests.get(ip);
+    if (req && req.count > 100) {
+      return false;
+    }
+    return true;
+  }
+
+  record(ip) {
+    // We're only changing this method
+    const existing = this.requests.get(ip) || { count: 0 };
+    existing.count++;
+    this.requests.set(ip, existing);
+  }
+}`;
+
+    // Patch only touches lines 18-20 (the record method)
+    const patch = `@@ -15,4 +15,6 @@
+   record(ip) {
++    // We're only changing this method
+     const existing = this.requests.get(ip) || { count: 0 };
++    existing.count++;
+     this.requests.set(ip, existing);
+   }`;
+
+    const files = [{ filename: "src/rateLimiter.ts", patch }];
+    const fileContents = new Map<string, string>();
+    fileContents.set("src/rateLimiter.ts", fileContent);
+
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+      fileContents,
+    });
+
+    // Should find STATEFUL_SERVICE on line 4 even though patch is on line 18-20
+    expect(findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+    const finding = findings.find((f) => f.kind === "STATEFUL_SERVICE");
+    expect(finding?.line).toBe(4);
+  });
+
+  it("should detect PROTOTYPE_INFRA anywhere in touched file", () => {
+    const fileContent = `const sqlite3 = require('sqlite3');
+const db = new sqlite3.Database('./data.db');
+
+function getUsers() {
+  return db.all('SELECT * FROM users');
+}
+
+// Just adding a comment here
+`;
+    const patch = `@@ -7,1 +7,2 @@
++// Just adding a comment here
+`;
+
+    const files = [{ filename: "src/database.js", patch }];
+    const fileContents = new Map<string, string>();
+    fileContents.set("src/database.js", fileContent);
+
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+      fileContents,
+    });
+
+    // Should find PROTOTYPE_INFRA on line 1 (require sqlite3)
+    expect(findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should NOT double-count issues that are both in patch and full file", () => {
+    // The issue IS in the changed line
+    const fileContent = `class Cache {
+  constructor() {
+    this.data = new Map();
+  }
+}
+`;
+    const patch = `@@ -1,5 +1,5 @@
++class Cache {
++  constructor() {
++    this.data = new Map();
++  }
++}
+`;
+
+    const files = [{ filename: "src/cache.ts", patch }];
+    const fileContents = new Map<string, string>();
+    fileContents.set("src/cache.ts", fileContent);
+
+    const findings = analyzePullRequestPatchesWithConfig(files, {
+      config: createDefaultConfig(),
+      fileContents,
+    });
+
+    // Should only have ONE STATEFUL_SERVICE finding, not duplicated
+    const statefulFindings = findings.filter((f) => f.kind === "STATEFUL_SERVICE");
+    expect(statefulFindings.length).toBe(1);
+  });
+});
+
+// ============================================================================
+// Phase 2: Baseline Repository Scan Tests
+// ============================================================================
+
+describe("analyzeRepository - Baseline Scan", () => {
+  it("should analyze multiple files and return aggregated findings", () => {
+    const fileContents = new Map<string, string>();
+
+    fileContents.set(
+      "src/cache.ts",
+      `class RateLimiter {
+  constructor() {
+    this.requests = new Map();
+  }
+}`
+    );
+
+    fileContents.set(
+      "src/db.js",
+      `const sqlite3 = require('sqlite3');
+const db = new sqlite3.Database('./data.db');`
+    );
+
+    fileContents.set(
+      "src/utils.ts",
+      `export function add(a: number, b: number): number {
+  return a + b;
+}`
+    );
+
+    const result = analyzeRepository(fileContents);
+
+    expect(result.filesAnalyzed).toBe(3);
+    expect(result.filesSkipped).toBe(0);
+    expect(result.truncated).toBe(false);
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+    expect(result.findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+  });
+
+  it("should skip non-code files", () => {
+    const fileContents = new Map<string, string>();
+
+    fileContents.set("README.md", "# My Project");
+    fileContents.set("package.json", '{"name": "test"}');
+    fileContents.set("src/index.ts", "export const x = 1;");
+
+    const result = analyzeRepository(fileContents);
+
+    expect(result.filesAnalyzed).toBe(1);
+    expect(result.filesSkipped).toBe(2);
+  });
+
+  it("should respect maxFiles limit", () => {
+    const fileContents = new Map<string, string>();
+
+    for (let i = 0; i < 10; i++) {
+      fileContents.set(`src/file${i}.ts`, "export const x = 1;");
+    }
+
+    const result = analyzeRepository(fileContents, { maxFiles: 5 });
+
+    expect(result.filesAnalyzed).toBe(5);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("should respect config file ignores", () => {
+    const fileContents = new Map<string, string>();
+
+    fileContents.set(
+      "src/main.ts",
+      `class Cache {
+  constructor() {
+    this.data = new Map();
+  }
+}`
+    );
+    fileContents.set(
+      "vendor/external.ts",
+      `class VendorCache {
+  constructor() {
+    this.cache = new Map();
+  }
+}`
+    );
+
+    // Create config that ignores vendor
+    const customConfig = createDefaultConfig();
+    const originalIsFileIgnored = customConfig.isFileIgnored;
+    customConfig.isFileIgnored = (path: string) => {
+      if (path.startsWith("vendor/")) return true;
+      return originalIsFileIgnored(path);
+    };
+
+    const result = analyzeRepository(fileContents, { config: customConfig });
+
+    expect(result.filesAnalyzed).toBe(1);
+    expect(result.filesSkipped).toBe(1);
+    expect(result.findings.every((f) => f.file === "src/main.ts")).toBe(true);
+  });
+
+  it("should detect multiple issue types in a single file", () => {
+    const fileContents = new Map<string, string>();
+
+    // File with multiple issues
+    fileContents.set(
+      "src/disaster.ts",
+      `const sqlite3 = require('sqlite3');
+const db = new sqlite3.Database('./app.db');
+
+class Service {
+  constructor() {
+    this.cache = new Map();
+  }
+}
+
+function runCode(code) {
+  return eval(code);
+}`
+    );
+
+    const result = analyzeRepository(fileContents);
+
+    expect(result.filesAnalyzed).toBe(1);
+    expect(result.findings.some((f) => f.kind === "PROTOTYPE_INFRA")).toBe(true);
+    expect(result.findings.some((f) => f.kind === "STATEFUL_SERVICE")).toBe(true);
+    expect(result.findings.some((f) => f.kind === "UNSAFE_EVAL")).toBe(true);
   });
 });
