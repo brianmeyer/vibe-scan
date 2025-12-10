@@ -394,7 +394,7 @@ async function postHighRiskComment(params: {
     });
     console.log("[GitHub App] Posted high-risk summary comment on PR", `${owner}/${repo}#${pullNumber}`);
   } catch (err) {
-    console.error("[GitHub App] Failed to post high-risk summary comment:", err);
+    console.error("[GitHub App] Failed to post high-risk summary comment:", err instanceof Error ? err.message : "unknown error");
   }
 }
 
@@ -766,7 +766,7 @@ export function registerEventHandlers(): void {
           }
         }
       } catch (err) {
-        console.error("[LLM] Unexpected error during LLM analysis:", err);
+        console.error("[LLM] Unexpected error during LLM analysis:", err instanceof Error ? err.message : "unknown error");
       }
 
       // Compute Vibe Score with config
@@ -888,13 +888,13 @@ export function registerEventHandlers(): void {
             body: commentBody,
           });
         } catch (err) {
-          console.error("[GitHub App] Error while trying to post high-risk comment:", err);
+          console.error("[GitHub App] Error while trying to post high-risk comment:", err instanceof Error ? err.message : "unknown error");
         }
       } else {
         console.log("[GitHub App] No high-risk findings; not posting PR comment.");
       }
     } catch (error) {
-      console.error("[GitHub App] Failed to create Vibe Scan check run:", error);
+      console.error("[GitHub App] Failed to create Vibe Scan check run:", error instanceof Error ? error.message : "unknown error");
     }
   });
 
@@ -936,7 +936,7 @@ export function registerEventHandlers(): void {
           repoFullName: repo.full_name,
         });
       } catch (error) {
-        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error);
+        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error instanceof Error ? error.message : "unknown error");
       }
     }
   });
@@ -965,7 +965,7 @@ export function registerEventHandlers(): void {
           repoFullName: repo.full_name,
         });
       } catch (error) {
-        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error);
+        console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error instanceof Error ? error.message : "unknown error");
       }
     }
   });
@@ -977,8 +977,9 @@ export function registerEventHandlers(): void {
 // Baseline Scan Implementation
 // ============================================================================
 
-const BASELINE_MAX_FILE_SIZE = 100 * 1024; // 100KB
-const BASELINE_MAX_FILES = 200;
+const BASELINE_MAX_FILE_SIZE = 100 * 1024; // 100KB per file
+const BASELINE_MAX_FILES = 200; // Max files to analyze
+const BASELINE_MAX_TOTAL_BYTES = 10 * 1024 * 1024; // 10MB total memory cap
 
 interface BaselineScanParams {
   installationId: number;
@@ -1043,25 +1044,34 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
     // vibescan-ignore-next-line LOOPED_IO
     const fileContents = new Map<string, string>();
     const batchSize = 10;
+    let totalBytes = 0;
+    let memoryLimitReached = false;
 
-    for (let i = 0; i < filesToAnalyze.length; i += batchSize) {
+    for (let i = 0; i < filesToAnalyze.length && !memoryLimitReached; i += batchSize) {
       const batch = filesToAnalyze.slice(i, i + batchSize);
       const promises = batch.map(async (file: { path?: string }) => {
-        if (!file.path) return;
+        if (!file.path || memoryLimitReached) return;
         try {
           const content = await fetchFileContent(octokit, owner, repoName, file.path, defaultBranch);
           if (content) {
+            // Check memory limit before adding
+            if (totalBytes + content.length > BASELINE_MAX_TOTAL_BYTES) {
+              memoryLimitReached = true;
+              console.warn(`[Baseline] Memory limit reached (${BASELINE_MAX_TOTAL_BYTES} bytes), stopping file fetch`);
+              return;
+            }
+            totalBytes += content.length;
             fileContents.set(file.path, content);
           }
         } catch (err) {
           // Individual file failures shouldn't stop the scan
-          console.warn(`[Baseline] Failed to fetch ${file.path}:`, err);
+          console.warn(`[Baseline] Failed to fetch ${file.path}:`, err instanceof Error ? err.message : "unknown error");
         }
       });
       await Promise.all(promises);
     }
 
-    console.log(`[Baseline] Fetched ${fileContents.size}/${filesToAnalyze.length} file(s)`);
+    console.log(`[Baseline] Fetched ${fileContents.size}/${filesToAnalyze.length} file(s), ${(totalBytes / 1024).toFixed(1)}KB total`);
 
     // Run analysis
     const baselineResult: BaselineAnalysisResult = analyzeRepository(fileContents, {
@@ -1098,7 +1108,7 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
 
     console.log(`[Baseline] Created baseline issue for ${repoFullName}`);
   } catch (error) {
-    console.error(`[Baseline] Error scanning ${repoFullName}:`, error);
+    console.error(`[Baseline] Error scanning ${repoFullName}:`, error instanceof Error ? error.message : "unknown error");
     throw error; // Re-throw so caller knows it failed
   }
 }
