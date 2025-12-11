@@ -346,6 +346,7 @@ function buildHighRiskCommentBody(params: {
       { emoji: "🔀", name: "Concurrency", data: archSummary.concurrency },
       { emoji: "⚠️", name: "Errors", data: archSummary.errorHandling },
       { emoji: "📋", name: "Data", data: archSummary.dataIntegrity },
+      { emoji: "🔒", name: "Security", data: archSummary.security },
     ];
 
     const activeCategories = categories.filter((c) => c.data.count > 0);
@@ -443,6 +444,7 @@ interface ArchitectureRiskSummary {
   concurrency: { count: number; topIssues: ArchIssue[] };
   errorHandling: { count: number; topIssues: ArchIssue[] };
   dataIntegrity: { count: number; topIssues: ArchIssue[] };
+  security: { count: number; topIssues: ArchIssue[] };
 }
 
 /**
@@ -455,6 +457,8 @@ const SCALING_KINDS = new Set([
   "NO_CACHING",
   "MEMORY_RISK",
   "LOOPED_IO",
+  "BLOCKING_OPERATION",
+  "STATEFUL_SERVICE",
 ]);
 
 const CONCURRENCY_KINDS = new Set([
@@ -478,6 +482,13 @@ const DATA_INTEGRITY_KINDS = new Set([
   "DATA_SHAPE_ASSUMPTION",
   "MIXED_RESPONSE_SHAPES",
   "HIDDEN_ASSUMPTIONS",
+  "HARDCODED_SECRET",
+]);
+
+const SECURITY_KINDS = new Set([
+  "UNSAFE_EVAL",
+  "HARDCODED_URL",
+  "PROTOTYPE_INFRA",
 ]);
 
 /** Max top issues to show per category */
@@ -498,6 +509,8 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   PROTOTYPE_INFRA: "Non-production infrastructure",
   HARDCODED_SECRET: "Hardcoded credential",
   UNSAFE_EVAL: "Dynamic code execution",
+  HARDCODED_URL: "Hardcoded URL/localhost",
+  BLOCKING_OPERATION: "Blocking synchronous operation",
   SCALING_RISK: "Scaling concern",
   CONCURRENCY_RISK: "Concurrency issue",
   RESILIENCE_GAP: "Missing fault tolerance",
@@ -521,6 +534,7 @@ function computeArchitectureRiskSummary(params: {
   const concurrencyIssues: ArchIssue[] = [];
   const errorHandlingIssues: ArchIssue[] = [];
   const dataIntegrityIssues: ArchIssue[] = [];
+  const securityIssues: ArchIssue[] = [];
 
   // Helper to convert finding to ArchIssue
   const toArchIssue = (f: Finding): ArchIssue => ({
@@ -553,6 +567,8 @@ function computeArchitectureRiskSummary(params: {
       errorHandlingIssues.push(toArchIssue(f));
     } else if (DATA_INTEGRITY_KINDS.has(f.kind)) {
       dataIntegrityIssues.push(toArchIssue(f));
+    } else if (SECURITY_KINDS.has(f.kind)) {
+      securityIssues.push(toArchIssue(f));
     }
   }
 
@@ -594,6 +610,10 @@ function computeArchitectureRiskSummary(params: {
       count: dataIntegrityIssues.length,
       topIssues: dataIntegrityIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
     },
+    security: {
+      count: securityIssues.length,
+      topIssues: securityIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
   };
 }
 
@@ -608,7 +628,8 @@ function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string 
     summary.scaling.count > 0 ||
     summary.concurrency.count > 0 ||
     summary.errorHandling.count > 0 ||
-    summary.dataIntegrity.count > 0;
+    summary.dataIntegrity.count > 0 ||
+    summary.security.count > 0;
 
   if (!hasAnyRisks) {
     text += "_No major architectural risk patterns detected._\n";
@@ -638,6 +659,7 @@ function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string 
   text += formatCategory("🔀", "Concurrency", summary.concurrency);
   text += formatCategory("⚠️", "Error Handling", summary.errorHandling);
   text += formatCategory("📋", "Data Integrity", summary.dataIntegrity);
+  text += formatCategory("🔒", "Security", summary.security);
 
   return text;
 }
