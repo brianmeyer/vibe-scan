@@ -1,0 +1,124 @@
+name: 'Vibe Scan'
+description: 'Analyze pull requests for vibe-coded production risks via hosted Vibe Scan service'
+author: 'Vibe Scan'
+
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  fail-on-high:
+    description: 'Fail the action if high-severity findings are detected'
+    required: false
+    default: 'false'
+  api-url:
+    description: 'Vibe Scan API URL (defaults to hosted service)'
+    required: false
+    default: 'https://vibe-scan-production.up.railway.app'
+
+outputs:
+  vibe-score:
+    description: 'The computed vibe score (0-100)'
+    value: ${{ steps.analyze.outputs.vibe-score }}
+  findings-count:
+    description: 'Total number of findings'
+    value: ${{ steps.analyze.outputs.findings-count }}
+  high-count:
+    description: 'Number of high-severity findings'
+    value: ${{ steps.analyze.outputs.high-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Analyze PR with Vibe Scan
+      id: analyze
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api-url }}
+        FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
+      run: |
+        # Extract PR number from GitHub context
+        if [ -z "${{ github.event.pull_request.number }}" ]; then
+          echo "::error::This action only runs on pull_request events"
+          exit 1
+        fi
+
+        PR_NUMBER="${{ github.event.pull_request.number }}"
+        OWNER="${{ github.repository_owner }}"
+        REPO="${{ github.event.repository.name }}"
+
+        echo "Analyzing PR #${PR_NUMBER} in ${OWNER}/${REPO}..."
+
+        # Call Vibe Scan API
+        RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+          "${API_URL}/api/analyze" \
+          -H "Content-Type: application/json" \
+          -d "{\"owner\":\"${OWNER}\",\"repo\":\"${REPO}\",\"pull_number\":${PR_NUMBER}}")
+
+        # Extract HTTP status code (last line) and body
+        HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+
+        if [ "$HTTP_CODE" != "200" ]; then
+          ERROR=$(echo "$BODY" | jq -r '.error // "Unknown error"')
+          echo "::error::Vibe Scan API error: ${ERROR}"
+          exit 1
+        fi
+
+        # Parse response
+        VIBE_SCORE=$(echo "$BODY" | jq -r '.vibeScore')
+        VIBE_LABEL=$(echo "$BODY" | jq -r '.vibeLabel')
+        TOTAL=$(echo "$BODY" | jq -r '.findings.total')
+        HIGH=$(echo "$BODY" | jq -r '.findings.high')
+        MEDIUM=$(echo "$BODY" | jq -r '.findings.medium')
+        LOW=$(echo "$BODY" | jq -r '.findings.low')
+        FILTERED=$(echo "$BODY" | jq -r '.findings.filtered')
+        SUMMARY=$(echo "$BODY" | jq -r '.executiveSummary // empty')
+
+        # Set outputs
+        echo "vibe-score=${VIBE_SCORE}" >> $GITHUB_OUTPUT
+        echo "findings-count=${TOTAL}" >> $GITHUB_OUTPUT
+        echo "high-count=${HIGH}" >> $GITHUB_OUTPUT
+
+        # Write job summary
+        echo "## Vibe Scan Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Vibe Score:** ${VIBE_SCORE}/100 (${VIBE_LABEL})" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ -n "$SUMMARY" ]; then
+          echo "### Executive Summary" >> $GITHUB_STEP_SUMMARY
+          echo "> ${SUMMARY}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "### Findings" >> $GITHUB_STEP_SUMMARY
+        echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| High | ${HIGH} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Medium | ${MEDIUM} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Low | ${LOW} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ "$FILTERED" -gt 0 ]; then
+          echo "_${FILTERED} finding(s) were filtered as likely false positives._" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        # Show top findings if any
+        if [ "$TOTAL" -gt 0 ]; then
+          echo "### Top Issues" >> $GITHUB_STEP_SUMMARY
+          echo "$BODY" | jq -r '.details | map(select(.likelyFalsePositive != true)) | sort_by(if .severity == "high" then 0 elif .severity == "medium" then 1 else 2 end) | .[0:5] | .[] | "- **[\(.severity | ascii_upcase)]** `\(.file)\(if .line then ":\(.line)" else "" end)` - \(.ruleId)"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "_Powered by [Vibe Scan](https://github.com/brianmeyer/vibe-scan)_" >> $GITHUB_STEP_SUMMARY
+
+        # Fail if high-severity findings and fail-on-high is enabled
+        if [ "$FAIL_ON_HIGH" = "true" ] && [ "$HIGH" -gt 0 ]; then
+          echo "::error::Found ${HIGH} high-severity finding(s)"
+          exit 1
+        fi
+
+        echo "Vibe Scan complete: Score ${VIBE_SCORE}/100, ${TOTAL} findings (${HIGH} high, ${MEDIUM} medium, ${LOW} low)"

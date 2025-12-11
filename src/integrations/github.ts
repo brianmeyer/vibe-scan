@@ -1635,9 +1635,54 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
 
     console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
 
-    // Compute Vibe Score
+    // Convert findings to StaticFindingSummary for LLM validation
+    const staticFindingSummaries: StaticFindingSummary[] = baselineResult.findings.map((f) => ({
+      ruleId: f.kind,
+      kind: f.kind,
+      file: f.file,
+      line: f.line ?? 0,
+      severity: f.severity === "high" ? "high" : f.severity === "medium" ? "medium" : "low",
+      summary: f.message,
+    }));
+
+    // Validate findings with LLM for confidence scoring (if enabled)
+    let validatedFindings: ValidatedFinding[] | null = null;
+    let validationFilteredCount = 0;
+    if (baselineResult.findings.length > 0 && vibescanConfig.llm.validate_findings) {
+      try {
+        console.log("[Baseline] Validating findings with LLM...");
+        const validationResult = await validateFindingsWithLlm({
+          findings: staticFindingSummaries,
+          codeContext: fileContents,
+          installationId,
+          confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+        });
+        if (validationResult) {
+          validatedFindings = validationResult.validatedFindings;
+          validationFilteredCount = validationResult.filteredCount;
+          console.log(
+            `[Baseline] Validation complete: ${validatedFindings.length} findings, ` +
+            `${validationFilteredCount} filtered as likely false positives, ` +
+            `${validationResult.tokensUsed} tokens used`
+          );
+        }
+      } catch (err) {
+        console.warn("[Baseline] Finding validation failed:", err instanceof Error ? err.message : "unknown");
+      }
+    }
+
+    // Compute Vibe Score (use validated findings if available to filter false positives from score)
+    const findingsForScore = validatedFindings
+      ? baselineResult.findings.filter((f, i) => {
+          const validated = validatedFindings!.find(
+            (v) => v.file === f.file && v.line === (f.line ?? 0) && v.ruleId === f.kind
+          );
+          return !validated?.likelyFalsePositive;
+        })
+      : baselineResult.findings;
+
     const vibeScoreResult = computeVibeScore({
-      staticFindings: baselineResult.findings,
+      staticFindings: findingsForScore,
       llmIssues: [],
       options: { scoringConfig: vibescanConfig.scoring },
     });
@@ -1647,6 +1692,8 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
       vibeScore: vibeScoreResult.score,
       vibeLabel: vibeScoreResult.label,
       findings: baselineResult.findings,
+      validatedFindings,
+      filteredCount: validationFilteredCount,
       filesAnalyzed: baselineResult.filesAnalyzed,
       filesSkipped: baselineResult.filesSkipped,
       truncated: baselineResult.truncated,
@@ -1675,12 +1722,14 @@ function buildBaselineIssueBody(params: {
   vibeScore: number;
   vibeLabel: string;
   findings: Finding[];
+  validatedFindings?: ValidatedFinding[] | null;
+  filteredCount?: number;
   filesAnalyzed: number;
   filesSkipped: number;
   truncated: boolean;
   totalCodeFiles: number;
 }): string {
-  const { vibeScore, vibeLabel, findings, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
+  const { vibeScore, vibeLabel, findings, validatedFindings, filteredCount = 0, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
 
   let body = `# Vibe Scan Baseline Report\n\n`;
   body += `Welcome to Vibe Scan! This is your baseline production readiness assessment.\n\n`;
@@ -1709,10 +1758,83 @@ function buildBaselineIssueBody(params: {
   if (truncated) {
     body += `- *Analysis was truncated at ${filesAnalyzed} files*\n`;
   }
-  body += `- **Issues Found:** ${findings.length}\n\n`;
+  body += `- **Issues Found:** ${findings.length}`;
+  if (filteredCount > 0) {
+    body += ` (${filteredCount} filtered as likely false positives)`;
+  }
+  body += `\n\n`;
 
-  // Findings summary
-  if (findings.length > 0) {
+  // Findings summary - use validated findings if available
+  if (validatedFindings && validatedFindings.length > 0) {
+    // Filter to only show true positives (not filtered)
+    const truePositives = validatedFindings.filter((f) => !f.likelyFalsePositive);
+    const high = truePositives.filter((f) => f.severity === "high");
+    const medium = truePositives.filter((f) => f.severity === "medium");
+    const low = truePositives.filter((f) => f.severity === "low");
+
+    body += `## Findings Summary\n\n`;
+    body += `| Severity | Count |\n|----------|-------|\n`;
+    body += `| High | ${high.length} |\n`;
+    body += `| Medium | ${medium.length} |\n`;
+    body += `| Low | ${low.length} |\n\n`;
+
+    if (filteredCount > 0) {
+      body += `_${filteredCount} finding(s) were filtered as likely false positives by LLM validation._\n\n`;
+    }
+
+    // High severity details with confidence
+    if (high.length > 0) {
+      body += `### High Severity Issues\n\n`;
+
+      const byKind = new Map<string, ValidatedFinding[]>();
+      for (const f of high) {
+        if (!byKind.has(f.ruleId)) byKind.set(f.ruleId, []);
+        byKind.get(f.ruleId)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        const avgConfidence = kindFindings.reduce((sum, f) => sum + f.confidence, 0) / kindFindings.length;
+        const badge = getConfidenceBadge(avgConfidence);
+        body += `${badge} **${kind}** (${kindFindings.length}) - _${getConfidenceLabel(avgConfidence)} confidence_\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+
+    // Medium severity details with confidence
+    if (medium.length > 0) {
+      body += `### Medium Severity Issues\n\n`;
+
+      const byKind = new Map<string, ValidatedFinding[]>();
+      for (const f of medium) {
+        if (!byKind.has(f.ruleId)) byKind.set(f.ruleId, []);
+        byKind.get(f.ruleId)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        const avgConfidence = kindFindings.reduce((sum, f) => sum + f.confidence, 0) / kindFindings.length;
+        const badge = getConfidenceBadge(avgConfidence);
+        body += `${badge} **${kind}** (${kindFindings.length}) - _${getConfidenceLabel(avgConfidence)} confidence_\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+
+    body += `**Confidence Legend:** 🔴 very high • 🟠 high • 🟡 medium\n\n`;
+  } else if (findings.length > 0) {
+    // Fallback to original display without validation
     const high = findings.filter((f) => f.severity === "high");
     const medium = findings.filter((f) => f.severity === "medium");
     const low = findings.filter((f) => f.severity === "low");
@@ -1758,4 +1880,263 @@ function buildBaselineIssueBody(params: {
   body += `---\n_Baseline scan from Vibe Scan installation._\n`;
 
   return body;
+}
+
+// ============================================================================
+// API Handler for GitHub Actions Integration
+// ============================================================================
+
+/**
+ * Result returned by the API analyze endpoint.
+ */
+export interface ApiAnalysisResult {
+  success: boolean;
+  vibeScore: number;
+  vibeLabel: string;
+  findings: {
+    total: number;
+    high: number;
+    medium: number;
+    low: number;
+    filtered: number;
+  };
+  details: Array<{
+    ruleId: string;
+    file: string;
+    line: number | null;
+    severity: string;
+    message: string;
+    confidence?: number;
+    likelyFalsePositive?: boolean;
+  }>;
+  executiveSummary?: string;
+  error?: string;
+}
+
+/**
+ * Create an App-authenticated Octokit for finding installations.
+ */
+function createAppOctokit(): Octokit {
+  if (!config.GITHUB_APP_ID || !config.GITHUB_PRIVATE_KEY) {
+    throw new Error("GITHUB_APP_ID or GITHUB_PRIVATE_KEY not set in config");
+  }
+
+  return new Octokit({
+    authStrategy: createAppAuth,
+    auth: {
+      appId: Number(config.GITHUB_APP_ID),
+      privateKey: config.GITHUB_PRIVATE_KEY,
+    },
+  });
+}
+
+/**
+ * Find the installation ID for a repository.
+ */
+async function findInstallationForRepo(owner: string, repo: string): Promise<number | null> {
+  try {
+    const appOctokit = createAppOctokit();
+    const response = await appOctokit.request("GET /repos/{owner}/{repo}/installation", {
+      owner,
+      repo,
+    });
+    return response.data.id;
+  } catch (error) {
+    const err = error as { status?: number };
+    if (err.status === 404) {
+      return null; // App not installed on this repo
+    }
+    throw error;
+  }
+}
+
+/**
+ * Analyze a pull request via API (for GitHub Actions integration).
+ *
+ * This is called by the lightweight GitHub Action to run analysis
+ * using the server's API keys (SaaS model).
+ */
+export async function analyzeForApi(
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<ApiAnalysisResult> {
+  console.log(`[API] Analyzing PR #${pullNumber} for ${owner}/${repo}`);
+
+  // Find installation
+  const installationId = await findInstallationForRepo(owner, repo);
+  if (!installationId) {
+    return {
+      success: false,
+      vibeScore: 0,
+      vibeLabel: "error",
+      findings: { total: 0, high: 0, medium: 0, low: 0, filtered: 0 },
+      details: [],
+      error: "Vibe Scan is not installed on this repository. Please install the GitHub App first.",
+    };
+  }
+
+  const octokit = createInstallationOctokit(installationId);
+
+  // Get PR details
+  let pr;
+  try {
+    const prResponse = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+    pr = prResponse.data;
+  } catch (error) {
+    return {
+      success: false,
+      vibeScore: 0,
+      vibeLabel: "error",
+      findings: { total: 0, high: 0, medium: 0, low: 0, filtered: 0 },
+      details: [],
+      error: `Failed to fetch PR #${pullNumber}: ${error instanceof Error ? error.message : "unknown"}`,
+    };
+  }
+
+  // Fetch config
+  const vibescanConfig = await fetchRepoConfig(
+    octokit,
+    owner,
+    repo,
+    pr.head.ref,
+    pr.base.ref
+  );
+
+  // Get PR files
+  const filesResponse = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/files", {
+    owner,
+    repo,
+    pull_number: pullNumber,
+    per_page: 100,
+  });
+
+  const prFiles = filesResponse.data.map((f) => ({
+    filename: f.filename,
+    patch: f.patch,
+  }));
+
+  console.log(`[API] Found ${prFiles.length} changed files`);
+
+  // Fetch file contents for context
+  const fileContents = new Map<string, string>();
+  const filesToFetch = prFiles
+    .map((f) => f.filename)
+    .filter((f) => CODE_EXTENSIONS.some((ext) => f.endsWith(ext)))
+    .slice(0, 20);
+
+  for (const filePath of filesToFetch) {
+    const content = await fetchFileContent(octokit, owner, repo, filePath, pr.head.sha);
+    if (content) {
+      fileContents.set(filePath, content);
+    }
+  }
+
+  // Run static analysis
+  const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, {
+    config: vibescanConfig,
+    fileContents,
+  });
+
+  console.log(`[API] Static analysis found ${staticFindings.length} findings`);
+
+  // Convert to summary format
+  const staticFindingSummaries: StaticFindingSummary[] = staticFindings.map((f) => ({
+    ruleId: f.kind,
+    kind: f.kind,
+    file: f.file,
+    line: f.line ?? 0,
+    severity: f.severity === "high" ? "high" : f.severity === "medium" ? "medium" : "low",
+    summary: f.message,
+  }));
+
+  // Validate findings with LLM
+  let validatedFindings: ValidatedFinding[] | null = null;
+  let filteredCount = 0;
+
+  if (staticFindings.length > 0 && vibescanConfig.llm.validate_findings) {
+    console.log("[API] Validating findings with LLM...");
+    const validationResult = await validateFindingsWithLlm({
+      findings: staticFindingSummaries,
+      codeContext: fileContents,
+      installationId,
+      confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+    });
+
+    if (validationResult) {
+      validatedFindings = validationResult.validatedFindings;
+      filteredCount = validationResult.filteredCount;
+      console.log(`[API] Validated: ${filteredCount} filtered as false positives`);
+    }
+  }
+
+  // Compute score (excluding filtered findings)
+  const findingsForScore = validatedFindings
+    ? staticFindings.filter((f) => {
+        const validated = validatedFindings!.find(
+          (v) => v.file === f.file && v.line === (f.line ?? 0) && v.ruleId === f.kind
+        );
+        return !validated?.likelyFalsePositive;
+      })
+    : staticFindings;
+
+  const vibeScoreResult = computeVibeScore({
+    staticFindings: findingsForScore,
+    llmIssues: [],
+    options: { scoringConfig: vibescanConfig.scoring },
+  });
+
+  // Count by severity
+  const high = findingsForScore.filter((f) => f.severity === "high").length;
+  const medium = findingsForScore.filter((f) => f.severity === "medium").length;
+  const low = findingsForScore.filter((f) => f.severity === "low").length;
+
+  // Generate executive summary
+  let executiveSummary: string | undefined;
+  if (findingsForScore.length > 0 && vibescanConfig.llm.enabled) {
+    try {
+      const summaryInput = prepareExecutiveSummaryInput(findingsForScore, vibeScoreResult.score, installationId);
+      executiveSummary = await generateExecutiveSummary(summaryInput) ?? undefined;
+    } catch {
+      // Executive summary is optional
+    }
+  }
+
+  // Build details array
+  const details = validatedFindings
+    ? validatedFindings.map((v) => ({
+        ruleId: v.ruleId,
+        file: v.file,
+        line: v.line || null,
+        severity: v.severity,
+        message: v.summary,
+        confidence: v.confidence,
+        likelyFalsePositive: v.likelyFalsePositive,
+      }))
+    : staticFindings.map((f) => ({
+        ruleId: f.kind,
+        file: f.file,
+        line: f.line || null,
+        severity: f.severity,
+        message: f.message,
+      }));
+
+  return {
+    success: true,
+    vibeScore: vibeScoreResult.score,
+    vibeLabel: vibeScoreResult.label,
+    findings: {
+      total: findingsForScore.length,
+      high,
+      medium,
+      low,
+      filtered: filteredCount,
+    },
+    details,
+    executiveSummary,
+  };
 }

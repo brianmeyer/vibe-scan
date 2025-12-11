@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import bodyParser from "body-parser";
 import rateLimit from "express-rate-limit";
 import { config } from "./env";
-import { webhooks, registerEventHandlers } from "./integrations/github";
+import { webhooks, registerEventHandlers, analyzeForApi } from "./integrations/github";
 import { getRedisClient, closeRedisConnection } from "./redis";
 import { logger } from "./logger";
 
@@ -182,6 +182,56 @@ app.post("/webhook", bodyParser.raw({ type: "*/*" }), async (req: Request, res: 
       error: err instanceof Error ? err.message : "unknown",
     });
   });
+});
+
+// API endpoint for GitHub Actions integration
+// This allows the lightweight action to call the hosted service
+app.post("/api/analyze", async (req: Request, res: Response) => {
+  const { owner, repo, pull_number } = req.body;
+
+  // Validate required fields
+  if (!owner || !repo || !pull_number) {
+    res.status(400).json({
+      success: false,
+      error: "Missing required fields: owner, repo, pull_number",
+    });
+    return;
+  }
+
+  // Validate types
+  if (typeof owner !== "string" || typeof repo !== "string") {
+    res.status(400).json({
+      success: false,
+      error: "owner and repo must be strings",
+    });
+    return;
+  }
+
+  const prNumber = Number(pull_number);
+  if (isNaN(prNumber) || prNumber <= 0) {
+    res.status(400).json({
+      success: false,
+      error: "pull_number must be a positive integer",
+    });
+    return;
+  }
+
+  try {
+    logger.info("API analysis requested", { owner, repo, pullNumber: prNumber });
+    const result = await analyzeForApi(owner, repo, prNumber);
+    res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    logger.error("API analysis failed", {
+      owner,
+      repo,
+      pullNumber: prNumber,
+      error: error instanceof Error ? error.message : "unknown",
+    });
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Internal server error",
+    });
+  }
 });
 
 // Graceful shutdown handler

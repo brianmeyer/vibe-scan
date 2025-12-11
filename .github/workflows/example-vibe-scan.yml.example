@@ -1,0 +1,27 @@
+# Example workflow for running Vibe Scan on pull requests
+# Copy this to your repository as .github/workflows/vibe-scan.yml
+#
+# Prerequisites:
+# 1. Install the Vibe Scan GitHub App on your repository
+# 2. The app handles all API keys - no secrets needed!
+
+name: Vibe Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  vibe-scan:
+    name: Production Risk Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Vibe Scan
+        uses: brianmeyer/vibe-scan@main
+        with:
+          # Optionally fail the workflow if high-severity issues are found
+          fail-on-high: 'false'
