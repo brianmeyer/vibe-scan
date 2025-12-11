@@ -97,18 +97,30 @@ const data = await fetch("/api"); // vibescan-ignore-line UNSAFE_IO
    - **Pull requests**: Read & Write
    - **Checks**: Read & Write
    - **Contents**: Read
+   - **Issues**: Write (for high-risk comments)
 
-2. Subscribe to the `pull_request` webhook event
+2. Subscribe to webhook events: `pull_request`, `check_suite`
 
 3. Set environment variables:
    ```bash
    GITHUB_APP_ID=your_app_id
    GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n..."
    GITHUB_WEBHOOK_SECRET=your_webhook_secret
-   GROQ_API_KEY=your_groq_api_key  # Optional, for LLM analysis
+   GROQ_API_KEY=your_groq_api_key
+   REDIS_URL=redis://...  # Required for token quota protection
+   MONTHLY_TOKEN_QUOTA=100000  # Optional, default 100k tokens/month
    ```
 
 4. Deploy and configure the webhook URL
+
+### Deploy to Railway
+
+1. Create a new project on [Railway](https://railway.app)
+2. Add a **Redis** service
+3. Connect your GitHub repo
+4. Set environment variables (Railway will auto-inject `REDIS_URL` from the Redis service)
+5. Configure public networking on port 3000
+6. Set your GitHub App webhook URL to `https://your-app.up.railway.app/webhook`
 
 ### Local Development
 
@@ -116,7 +128,7 @@ const data = await fetch("/api"); // vibescan-ignore-line UNSAFE_IO
 # Install dependencies
 npm install
 
-# Start development server
+# Start development server (requires Redis)
 npm run dev
 
 # Build for production
