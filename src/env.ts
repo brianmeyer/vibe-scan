@@ -8,6 +8,7 @@ export const config = {
   GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET,
   GITHUB_PRIVATE_KEY: process.env.GITHUB_PRIVATE_KEY,
   GROQ_API_KEY: process.env.GROQ_API_KEY,
+  // vibescan-ignore-next-line HARDCODED_SECRET - Example URL in comment, not a real secret
   // Redis URL for Railway (e.g., redis://default:password@host:port)
   REDIS_URL: process.env.REDIS_URL,
   // Monthly token quota per installation (default: 5,000,000 for alpha testing)
