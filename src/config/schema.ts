@@ -72,6 +72,35 @@ export interface VibeScanFilesConfig {
 }
 
 /**
+ * Reporting/output configuration options.
+ */
+export interface VibeScanReportingConfig {
+  /**
+   * Whether to create GitHub issues for high-severity findings.
+   * Default: false
+   */
+  create_issues?: boolean;
+
+  /**
+   * Maximum number of issues to create per PR.
+   * Default: 3
+   */
+  max_issues_per_pr?: number;
+
+  /**
+   * Minimum severity to create issues for.
+   * Default: "high"
+   */
+  issue_severity_threshold?: "high" | "medium" | "low";
+
+  /**
+   * Labels to add to created issues.
+   * Default: ["vibe-scan", "production-risk"]
+   */
+  issue_labels?: string[];
+}
+
+/**
  * Complete .vibescan.yml configuration schema.
  */
 export interface VibeScanConfig {
@@ -102,6 +131,11 @@ export interface VibeScanConfig {
   llm?: VibeScanLlmConfig;
 
   /**
+   * Reporting/output configuration options.
+   */
+  reporting?: VibeScanReportingConfig;
+
+  /**
    * Path-specific rule overrides.
    * Applied in order; later overrides take precedence.
    */
@@ -128,6 +162,13 @@ export interface RequiredFilesConfig {
   prototype_zone: string[];
 }
 
+export interface RequiredReportingConfig {
+  create_issues: boolean;
+  max_issues_per_pr: number;
+  issue_severity_threshold: "high" | "medium" | "low";
+  issue_labels: string[];
+}
+
 /**
  * Default values for scoring configuration.
  */
@@ -152,4 +193,14 @@ export const DEFAULT_LLM_CONFIG: RequiredLlmConfig = {
 export const DEFAULT_FILES_CONFIG: RequiredFilesConfig = {
   ignore: [],
   prototype_zone: [],
+};
+
+/**
+ * Default values for reporting configuration.
+ */
+export const DEFAULT_REPORTING_CONFIG: RequiredReportingConfig = {
+  create_issues: false,
+  max_issues_per_pr: 3,
+  issue_severity_threshold: "high",
+  issue_labels: ["vibe-scan", "production-risk"],
 };

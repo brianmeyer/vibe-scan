@@ -15,6 +15,8 @@ import {
   LLM_ISSUE_KIND_LABELS,
   groupIssuesByKind,
   StaticFindingSummary,
+  generateExecutiveSummary,
+  ExecutiveSummaryInput,
 } from "./llm";
 import { computeVibeScore, VibeScoreResult } from "../analysis/scoring";
 import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../config/loader";
@@ -519,6 +521,158 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   ENVIRONMENT_ASSUMPTION: "Environment-specific code",
 };
 
+// ============================================================================
+// Grouped Findings Display
+// ============================================================================
+
+/**
+ * Grouped finding info for display.
+ */
+interface GroupedFinding {
+  kind: string;
+  count: number;
+  severity: "high" | "medium" | "low";
+  description: string;
+  locations: { file: string; line?: number }[];
+}
+
+/**
+ * Group static findings by rule kind for better display.
+ */
+function groupStaticFindingsByKind(findings: Finding[]): GroupedFinding[] {
+  const groups = new Map<string, GroupedFinding>();
+
+  for (const f of findings) {
+    const existing = groups.get(f.kind);
+    if (existing) {
+      existing.count++;
+      existing.locations.push({ file: f.file, line: f.line });
+      // Upgrade severity if higher
+      if (f.severity === "high" && existing.severity !== "high") {
+        existing.severity = "high";
+      } else if (f.severity === "medium" && existing.severity === "low") {
+        existing.severity = "medium";
+      }
+    } else {
+      groups.set(f.kind, {
+        kind: f.kind,
+        count: 1,
+        severity: f.severity,
+        description: RULE_DESCRIPTIONS[f.kind] || f.message || f.kind,
+        locations: [{ file: f.file, line: f.line }],
+      });
+    }
+  }
+
+  // Sort by severity (high first) then by count (descending)
+  return Array.from(groups.values()).sort((a, b) => {
+    const severityOrder = { high: 0, medium: 1, low: 2 };
+    if (severityOrder[a.severity] !== severityOrder[b.severity]) {
+      return severityOrder[a.severity] - severityOrder[b.severity];
+    }
+    return b.count - a.count;
+  });
+}
+
+/**
+ * Build grouped findings display text.
+ */
+function buildGroupedFindingsDisplay(
+  groupedFindings: GroupedFinding[],
+  maxGroupsToShow: number = 8,
+  maxLocationsPerGroup: number = 3
+): string {
+  if (groupedFindings.length === 0) {
+    return "_No static issues detected in this diff._\n";
+  }
+
+  let text = "";
+  let groupsShown = 0;
+  let totalFindingsShown = 0;
+  const totalFindings = groupedFindings.reduce((sum, g) => sum + g.count, 0);
+
+  for (const group of groupedFindings) {
+    if (groupsShown >= maxGroupsToShow) break;
+
+    const severityBadge = group.severity.toUpperCase();
+    const countLabel = group.count > 1 ? `(${group.count} findings)` : "(1 finding)";
+
+    text += `### [${severityBadge}] ${group.kind} ${countLabel}\n`;
+    text += `${group.description}\n`;
+
+    // Show locations
+    const locationsToShow = group.locations.slice(0, maxLocationsPerGroup);
+    const locationStrings = locationsToShow.map(loc =>
+      loc.line ? `${loc.file}:${loc.line}` : loc.file
+    );
+
+    text += `📍 ${locationStrings.join(", ")}`;
+    if (group.locations.length > maxLocationsPerGroup) {
+      text += ` (+${group.locations.length - maxLocationsPerGroup} more)`;
+    }
+    text += "\n\n";
+
+    groupsShown++;
+    totalFindingsShown += group.count;
+  }
+
+  if (groupedFindings.length > maxGroupsToShow) {
+    const remainingGroups = groupedFindings.length - maxGroupsToShow;
+    const remainingFindings = totalFindings - totalFindingsShown;
+    text += `_+ ${remainingGroups} more issue type(s) with ${remainingFindings} finding(s) not shown._\n`;
+  }
+
+  return text;
+}
+
+/**
+ * Prepare input for executive summary generation.
+ */
+function prepareExecutiveSummaryInput(
+  findings: Finding[],
+  vibeScore: number,
+  installationId?: number
+): ExecutiveSummaryInput {
+  const findingsByKind = new Map<string, { count: number; severity: string; files: string[] }>();
+
+  for (const f of findings) {
+    const existing = findingsByKind.get(f.kind);
+    if (existing) {
+      existing.count++;
+      if (!existing.files.includes(f.file)) {
+        existing.files.push(f.file);
+      }
+      // Keep highest severity
+      if (f.severity === "high") existing.severity = "high";
+      else if (f.severity === "medium" && existing.severity !== "high") existing.severity = "medium";
+    } else {
+      findingsByKind.set(f.kind, {
+        count: 1,
+        severity: f.severity,
+        files: [f.file],
+      });
+    }
+  }
+
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const highCount = findings.filter(f => f.severity === "high").length;
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const mediumCount = findings.filter(f => f.severity === "medium").length;
+
+  return {
+    findingsByKind,
+    totalFindings: findings.length,
+    highCount,
+    mediumCount,
+    vibeScore,
+    installationId,
+  };
+}
+
+// ============================================================================
+// Architecture Risk Summary
+// ============================================================================
+
 /**
  * Compute an architecture risk summary from static findings and LLM issues.
  * Groups findings into risk categories and captures top issues for display.
@@ -662,6 +816,101 @@ function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string 
   text += formatCategory("🔒", "Security", summary.security);
 
   return text;
+}
+
+// ============================================================================
+// GitHub Issue Creation
+// ============================================================================
+
+/**
+ * Create GitHub issues for high-severity findings.
+ */
+async function createIssuesForFindings(params: {
+  octokit: Octokit;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  prTitle: string;
+  findings: Finding[];
+  config: {
+    create_issues: boolean;
+    max_issues_per_pr: number;
+    issue_severity_threshold: "high" | "medium" | "low";
+    issue_labels: string[];
+  };
+}): Promise<number> {
+  const { octokit, owner, repo, prNumber, prTitle, findings, config } = params;
+
+  if (!config.create_issues) {
+    return 0;
+  }
+
+  // Filter findings by severity threshold
+  const severityOrder = { high: 3, medium: 2, low: 1 };
+  const thresholdValue = severityOrder[config.issue_severity_threshold];
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const eligibleFindings = findings.filter(
+    (f) => severityOrder[f.severity] >= thresholdValue
+  );
+
+  if (eligibleFindings.length === 0) {
+    console.log("[GitHub Issues] No findings meet severity threshold");
+    return 0;
+  }
+
+  // Group findings by kind to avoid creating duplicate issues
+  const groupedFindings = groupStaticFindingsByKind(eligibleFindings);
+
+  // Create issues for top groups (up to max)
+  let issuesCreated = 0;
+  for (const group of groupedFindings.slice(0, config.max_issues_per_pr)) {
+    try {
+      const locations = group.locations
+        .slice(0, 5)
+        .map((loc) => (loc.line ? `- \`${loc.file}:${loc.line}\`` : `- \`${loc.file}\``))
+        .join("\n");
+
+      const moreLocations =
+        group.locations.length > 5 ? `\n- _+${group.locations.length - 5} more locations_` : "";
+
+      const body = `## Vibe Scan: ${group.kind}
+
+**Severity:** ${group.severity.toUpperCase()}
+**PR:** #${prNumber} - ${prTitle}
+**Findings:** ${group.count}
+
+### Description
+${group.description}
+
+### Locations
+${locations}${moreLocations}
+
+### Recommended Action
+Review and address these findings before merging to production.
+
+---
+_This issue was automatically created by [Vibe Scan](https://github.com/apps/vibe-scan)._`;
+
+      await octokit.request("POST /repos/{owner}/{repo}/issues", {
+        owner,
+        repo,
+        title: `[Vibe Scan] ${group.kind}: ${group.count} finding(s) in PR #${prNumber}`,
+        body,
+        labels: config.issue_labels,
+      });
+
+      issuesCreated++;
+      console.log(`[GitHub Issues] Created issue for ${group.kind}`);
+    } catch (err) {
+      // vibescan-ignore-next-line SILENT_ERROR - Intentional: continue creating other issues
+      console.error(
+        `[GitHub Issues] Failed to create issue for ${group.kind}:`,
+        err instanceof Error ? err.message : "unknown"
+      );
+    }
+  }
+
+  return issuesCreated;
 }
 
 // ============================================================================
@@ -855,23 +1104,35 @@ export function registerEventHandlers(): void {
           `Detected ${totalFindings} static potential risk area(s) (H:${highCount}, M:${mediumCount}, L:${lowCount}) and ${llmIssueCount} AI-identified issue(s). Review before merging to production.`;
       }
 
+      // Generate executive summary using LLM (if findings exist)
+      let executiveSummary: string | null = null;
+      if (totalFindings > 0) {
+        try {
+          const summaryInput = prepareExecutiveSummaryInput(staticFindings, vibeScore, installationId);
+          executiveSummary = await generateExecutiveSummary(summaryInput);
+        } catch (err) {
+          console.warn("[PR Check] Executive summary generation failed:", err instanceof Error ? err.message : "unknown");
+        }
+      }
+
       // Build markdown details text
       let text = "";
 
       text += `## Vibe Score\n\n`;
       text += `**Score:** ${vibeScore} (${vibeLabel})\n\n`;
 
+      // Add executive summary at the top if available
+      if (executiveSummary) {
+        text += `## Executive Summary\n\n`;
+        text += `> ${executiveSummary}\n\n`;
+      }
+
+      // Group and display static findings
+      text += "## Static Analysis Findings\n\n";
       if (totalFindings) {
-        text += "## Static analysis findings\n\n";
-        const maxStaticToShow = 10;
-        staticFindings.slice(0, maxStaticToShow).forEach((f) => {
-          text += `- [${f.severity.toUpperCase()}] ${f.file}${f.line ? `:${f.line}` : ""} (${f.kind}): ${f.message}\n`;
-        });
-        if (totalFindings > maxStaticToShow) {
-          text += `\n_+ ${totalFindings - maxStaticToShow} more static finding(s) not shown._\n`;
-        }
+        const groupedFindings = groupStaticFindingsByKind(staticFindings);
+        text += buildGroupedFindingsDisplay(groupedFindings);
       } else {
-        text += "## Static analysis findings\n\n";
         text += "_No static issues detected in this diff._\n";
       }
 
@@ -956,6 +1217,26 @@ export function registerEventHandlers(): void {
         }
       } else {
         console.log("[GitHub App] No high-risk findings; not posting PR comment.");
+      }
+
+      // Create GitHub issues for high-severity findings (if enabled)
+      if (vibescanConfig.reporting.create_issues && staticFindings.length > 0) {
+        try {
+          const issuesCreated = await createIssuesForFindings({
+            octokit,
+            owner,
+            repo,
+            prNumber: pullNumber,
+            prTitle: payload.pull_request.title,
+            findings: staticFindings,
+            config: vibescanConfig.reporting,
+          });
+          if (issuesCreated > 0) {
+            console.log(`[GitHub App] Created ${issuesCreated} issue(s) for high-severity findings`);
+          }
+        } catch (err) {
+          console.error("[GitHub App] Error creating issues:", err instanceof Error ? err.message : "unknown");
+        }
       }
     } catch (error) {
       console.error("[GitHub App] Failed to create Vibe Scan check run:", error instanceof Error ? error.message : "unknown error");

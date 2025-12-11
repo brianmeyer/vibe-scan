@@ -763,3 +763,116 @@ export function groupIssuesByKind(issues: LlmIssue[]): Map<LlmIssueKind, LlmIssu
 
   return grouped;
 }
+
+// ============================================================================
+// Executive Summary Generation
+// ============================================================================
+
+/**
+ * Input for generating an executive summary.
+ */
+export interface ExecutiveSummaryInput {
+  /** Grouped static findings by rule kind */
+  findingsByKind: Map<string, { count: number; severity: string; files: string[] }>;
+  /** Total findings count */
+  totalFindings: number;
+  /** High severity count */
+  highCount: number;
+  /** Medium severity count */
+  mediumCount: number;
+  /** Vibe score (0-100) */
+  vibeScore: number;
+  /** Installation ID for quota tracking */
+  installationId?: number;
+}
+
+/**
+ * Build a prompt for generating an executive summary.
+ */
+function buildExecutiveSummaryPrompt(input: ExecutiveSummaryInput): string {
+  const findingsList = Array.from(input.findingsByKind.entries())
+    .map(([kind, data]) => `- ${kind}: ${data.count} finding(s), severity=${data.severity}, files: ${data.files.slice(0, 3).join(", ")}${data.files.length > 3 ? ` (+${data.files.length - 3} more)` : ""}`)
+    .join("\n");
+
+  return `You are a senior software engineer reviewing a pull request for production readiness.
+
+Based on the following static analysis findings, write a concise 2-3 sentence executive summary that:
+1. Highlights the most critical issues that need immediate attention
+2. Groups related problems (e.g., "multiple network calls lack error handling")
+3. Suggests the highest-priority fix
+
+FINDINGS SUMMARY:
+Total: ${input.totalFindings} findings (${input.highCount} high, ${input.mediumCount} medium)
+Vibe Score: ${input.vibeScore}/100
+
+BY CATEGORY:
+${findingsList}
+
+RULES:
+- Be concise and actionable (2-3 sentences max)
+- Focus on production risk, not code style
+- Use specific numbers ("7 fetch calls" not "several calls")
+- If score is 0-30, emphasize critical blockers
+- If score is 31-70, note areas needing attention
+- If score is 71-100, acknowledge good state with minor suggestions
+
+Respond with ONLY the summary text, no JSON or formatting.`;
+}
+
+/**
+ * Generate an executive summary of findings using LLM.
+ * Returns null if LLM is unavailable or quota exceeded.
+ */
+export async function generateExecutiveSummary(
+  input: ExecutiveSummaryInput
+): Promise<string | null> {
+  // Check if API key is configured
+  if (!config.GROQ_API_KEY) {
+    console.warn("[LLM] GROQ_API_KEY not configured, skipping executive summary");
+    return null;
+  }
+
+  // Check quota if installationId is provided
+  if (input.installationId) {
+    const quotaExceeded = await isQuotaExceeded(input.installationId);
+    if (quotaExceeded) {
+      console.warn("[LLM] Quota exceeded, skipping executive summary");
+      return null;
+    }
+  }
+
+  try {
+    const client = new OpenAI({
+      apiKey: config.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+    });
+
+    const prompt = buildExecutiveSummaryPrompt(input);
+
+    const completion = await client.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      max_tokens: 256,
+    });
+
+    // Record token usage
+    if (input.installationId && completion.usage) {
+      const totalTokens = completion.usage.total_tokens || 0;
+      await recordTokenUsage(input.installationId, totalTokens);
+      console.log(`[LLM] Executive summary used ${totalTokens} tokens`);
+    }
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      console.warn("[LLM] Empty executive summary response");
+      return null;
+    }
+
+    return content.trim();
+  } catch (error) {
+    // vibescan-ignore-next-line SILENT_ERROR - Intentional: LLM failure shouldn't block analysis
+    console.error("[LLM] Executive summary generation failed:", error instanceof Error ? error.message : "unknown");
+    return null;
+  }
+}
