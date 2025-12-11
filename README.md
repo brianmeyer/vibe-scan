@@ -2,7 +2,7 @@
 
 [![Vibe Score](https://img.shields.io/badge/vibe--scan-enabled-brightgreen)](https://github.com/brianmeyer/vibe-scan)
 
-A GitHub App that analyzes pull requests for "vibe-coded" production risks. Combines static analysis with LLM-powered review to catch scaling issues, concurrency problems, and other patterns that commonly cause production failures in AI-generated or prototype code.
+A GitHub App that analyzes pull requests for "vibe-coded" production risks. Combines **AST-based static analysis** with **LLM-powered review** to catch scaling issues, concurrency problems, and other patterns that commonly cause production failures in AI-generated or prototype code.
 
 ## What is "Vibe-Coded"?
 
@@ -14,33 +14,73 @@ A GitHub App that analyzes pull requests for "vibe-coded" production risks. Comb
 
 ## Features
 
-### Static Analysis
-Detects production-risk patterns in TypeScript/JavaScript code:
+### Multi-Language AST Analysis
 
-| Category | Examples |
-|----------|----------|
-| **Scaling** | Unbounded queries, N+1 patterns, missing pagination, looped I/O |
-| **Concurrency** | Race conditions, retry storms, shared file writes |
-| **Error Handling** | Silent errors, missing try/catch on I/O, async misuse |
-| **Data Integrity** | Unvalidated input, type assertions on external data |
-| **Code Quality** | TODO/FIXME/HACK comments, console.log debugging |
+Vibe Scan uses **Abstract Syntax Tree (AST) parsing** for accurate, scope-aware analysis with **regex fallback** for unsupported languages:
+
+| Language | Parser | Features |
+|----------|--------|----------|
+| TypeScript/JavaScript | ts-morph | Full type info, scope detection |
+| Python | tree-sitter | Function/class boundaries |
+| Go | tree-sitter | Goroutine detection |
+| Ruby | tree-sitter | Block/method scopes |
+| Others | Regex | Pattern matching fallback |
+
+**AST advantages over regex-only:**
+- Scope-aware detection (inside try/catch, loops, functions)
+- Comment and string literal filtering (reduces false positives)
+- Code context awareness (route handlers, module scope)
+- Graceful fallback on parse errors
+
+### Static Analysis Rules (23 Rules)
+
+| Category | Rules |
+|----------|-------|
+| **Scaling** | `UNBOUNDED_QUERY`, `UNBOUNDED_COLLECTION_PROCESSING`, `MISSING_BATCHING`, `NO_CACHING`, `MEMORY_RISK`, `LOOPED_IO`, `BLOCKING_OPERATION` |
+| **Concurrency** | `SHARED_FILE_WRITE`, `RETRY_STORM_RISK`, `BUSY_WAIT_OR_TIGHT_LOOP`, `CHECK_THEN_ACT_RACE`, `GLOBAL_MUTATION` |
+| **Error Handling** | `UNSAFE_IO`, `SILENT_ERROR`, `ASYNC_MISUSE` |
+| **Data Integrity** | `UNVALIDATED_INPUT`, `DATA_SHAPE_ASSUMPTION`, `MIXED_RESPONSE_SHAPES`, `HARDCODED_SECRET` |
+| **Code Quality** | `TEMPORARY_HACK`, `CONSOLE_DEBUG` |
+| **Architecture** | `STATEFUL_SERVICE`, `PROTOTYPE_INFRA` |
+| **Security** | `UNSAFE_EVAL`, `HARDCODED_URL` |
+
+### Analysis Modes
+
+1. **PR Patch Analysis**: Analyzes changed lines in the PR diff
+2. **Full File Scanning**: Critical issues anywhere in touched files (`STATEFUL_SERVICE`, `PROTOTYPE_INFRA`, `HARDCODED_SECRET`, `UNSAFE_EVAL`, `GLOBAL_MUTATION`)
+3. **Baseline Repository Scan**: One-time full repo analysis for new installations
 
 ### LLM Analysis (Advisory)
-Uses Groq API to provide additional context on:
-- **Scaling Risk** - Performance/cost issues as traffic grows
-- **Concurrency Risk** - Race conditions and contention
-- **Environment Assumption** - Hidden infrastructure assumptions
-- **Data Contract Risk** - Data shape/validation issues
-- **Observability Gap** - Missing logging/metrics
-- **Resilience Gap** - Missing fault tolerance
+
+Uses Groq API (llama-3.1-8b-instant) to provide additional context. **Advisory only** - does NOT affect the Vibe Score.
+
+| Issue Kind | Description |
+|------------|-------------|
+| `SCALING_RISK` | Performance/cost issues as traffic grows |
+| `CONCURRENCY_RISK` | Race conditions and contention |
+| `ENVIRONMENT_ASSUMPTION` | Hidden infrastructure assumptions |
+| `DATA_CONTRACT_RISK` | Data shape/validation issues |
+| `OBSERVABILITY_GAP` | Missing logging/metrics |
+| `RESILIENCE_GAP` | Missing fault tolerance |
+
+**Token Quota Protection**: Monthly per-installation limits stored in Redis prevent runaway costs.
 
 ### Vibe Score
+
 A 0-100 score indicating production readiness:
-- **90-100**: Excellent - Production ready
-- **75-89**: Good - Minor concerns
-- **60-74**: Moderate risk - Should review before production
-- **40-59**: Risky - Significant issues to address
-- **0-39**: Critical risk - Major concerns
+
+| Score | Label | Description |
+|-------|-------|-------------|
+| 90-100 | Excellent | Production ready |
+| 75-89 | Good | Minor concerns |
+| 60-74 | Moderate risk | Review before production |
+| 40-59 | Risky | Significant issues |
+| 0-39 | Critical risk | Major concerns |
+
+**Scoring factors:**
+- Scaling/concurrency/security rules have heavier penalties
+- Rule level multipliers: error (1.0), warning (0.5), info (0.2)
+- Configurable weight multiplier
 
 ## Configuration
 
@@ -78,7 +118,7 @@ overrides:
 
 ### Inline Suppressions
 
-Suppress findings with comments:
+Suppress findings with comments (works in any language):
 
 ```typescript
 /* vibescan-ignore-file ALL */
@@ -87,6 +127,15 @@ Suppress findings with comments:
 const users = await db.users.findMany();
 
 const data = await fetch("/api"); // vibescan-ignore-line UNSAFE_IO
+
+// vibescan-ignore-next-line UNSAFE_IO,SILENT_ERROR
+```
+
+```python
+# vibescan-ignore-file ALL
+
+# vibescan-ignore-next-line UNBOUNDED_QUERY
+users = db.query("SELECT * FROM users")
 ```
 
 ## Installation
@@ -103,12 +152,15 @@ const data = await fetch("/api"); // vibescan-ignore-line UNSAFE_IO
 
 3. Set environment variables:
    ```bash
+   # Required
    GITHUB_APP_ID=your_app_id
    GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n..."
    GITHUB_WEBHOOK_SECRET=your_webhook_secret
-   GROQ_API_KEY=your_groq_api_key
-   REDIS_URL=redis://...  # Required for token quota protection
-   MONTHLY_TOKEN_QUOTA=100000  # Optional, default 100k tokens/month
+   REDIS_URL=redis://...
+
+   # Optional
+   GROQ_API_KEY=your_groq_api_key  # For LLM analysis
+   MONTHLY_TOKEN_QUOTA=100000      # Default 100k tokens/month
    ```
 
 4. Deploy and configure the webhook URL
@@ -118,8 +170,8 @@ const data = await fetch("/api"); // vibescan-ignore-line UNSAFE_IO
 1. Create a new project on [Railway](https://railway.app)
 2. Add a **Redis** service
 3. Connect your GitHub repo
-4. Set environment variables (Railway will auto-inject `REDIS_URL` from the Redis service)
-5. Configure public networking on port 3000
+4. Set environment variables (Railway auto-injects `REDIS_URL` and `PORT`)
+5. Configure public networking
 6. Set your GitHub App webhook URL to `https://your-app.up.railway.app/webhook`
 
 ### Local Development
@@ -136,36 +188,96 @@ npm run build
 npm run start
 ```
 
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Status page with version info |
+| `/health` | GET | Health check (Redis connectivity, GitHub config) |
+| `/webhook` | POST | GitHub webhook handler |
+
 ## How It Works
 
-1. **PR Opened/Updated**: GitHub sends a webhook
-2. **Fetch PR Files**: Get the diff patches for changed files
-3. **Static Analysis**: Scan patches for known risk patterns
-4. **LLM Analysis** (optional): Send high-risk files to Groq for deeper review
-5. **Compute Vibe Score**: Calculate production readiness score
-6. **Post Results**: Create a check run with findings summary
-7. **High-Risk Comment**: Optionally post a PR comment for critical issues
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  GitHub sends   │────▶│  Webhook handler │────▶│  Respond 200 OK │
+│  pull_request   │     │  (verify sig)    │     │  immediately    │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                                │
+                                ▼ (async background)
+                        ┌──────────────────┐
+                        │  Fetch PR files  │
+                        │  & config        │
+                        └──────────────────┘
+                                │
+                                ▼
+                        ┌──────────────────┐
+                        │  AST Analysis    │
+                        │  + Regex fallback│
+                        └──────────────────┘
+                                │
+                                ▼
+                        ┌──────────────────┐
+                        │  LLM Analysis    │
+                        │  (if quota OK)   │
+                        └──────────────────┘
+                                │
+                                ▼
+                        ┌──────────────────┐
+                        │  Compute Score   │
+                        │  & Post Results  │
+                        └──────────────────┘
+```
+
+## Production Features
+
+- **Async Webhook Processing**: Responds immediately, processes in background
+- **Rate Limiting**: 100 req/min (general), 60 req/min (webhooks)
+- **Token Quota**: Monthly per-installation limits prevent cost overruns
+- **Graceful Shutdown**: Clean Redis disconnect on SIGTERM/SIGINT
+- **Structured Logging**: JSON logs in production, human-readable in dev
+- **Health Checks**: `/health` endpoint for load balancers
 
 ## Project Structure
 
 ```
 src/
-├── index.ts              # Express webhook server entry point
-├── env.ts                # Environment variable configuration
-├── analysis/             # Static analysis modules
-│   ├── analyzer.ts       # Main analysis orchestration
-│   ├── patterns.ts       # Detection pattern constants
-│   ├── helpers.ts        # Analysis helper functions
-│   ├── rules.ts          # Rule definitions and types
-│   └── scoring.ts        # Vibe Score computation
-├── config/               # Configuration system
-│   ├── schema.ts         # Config type definitions
-│   ├── loader.ts         # .vibescan.yml loading
-│   └── suppression.ts    # Inline suppression parsing
-└── integrations/         # External service integrations
-    ├── github.ts         # GitHub App webhook handlers
-    └── llm.ts            # LLM integration (Groq)
+├── index.ts               # Express server, webhooks, health check
+├── env.ts                 # Environment variable configuration
+├── redis.ts               # Redis client singleton (token quota)
+├── logger.ts              # Structured JSON logging
+├── analysis/
+│   ├── analyzer.ts        # Main analysis orchestration
+│   ├── ast.ts             # AST analysis coordinator
+│   ├── ast/               # Language-specific AST analyzers
+│   │   ├── typescript.ts  # TypeScript/JavaScript (ts-morph)
+│   │   ├── python.ts      # Python (tree-sitter)
+│   │   ├── go.ts          # Go (tree-sitter)
+│   │   └── ruby.ts        # Ruby (tree-sitter)
+│   ├── patterns.ts        # Regex pattern constants
+│   ├── helpers.ts         # Analysis helper functions
+│   ├── rules.ts           # Rule definitions and types
+│   ├── scoring.ts         # Vibe Score computation
+│   └── structure.ts       # Code structure extraction
+├── config/
+│   ├── schema.ts          # VibeScanConfig type definitions
+│   ├── loader.ts          # .vibescan.yml loading
+│   └── suppression.ts     # Inline suppression parsing
+└── integrations/
+    ├── github.ts          # GitHub App webhook handlers
+    └── llm.ts             # Groq LLM integration + quota
+
+Deployment:
+├── Dockerfile             # Multi-stage Docker build
+├── railway.toml           # Railway configuration
+└── .dockerignore
 ```
+
+## Supported File Types
+
+Code analysis runs on: `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.go`, `.rb`, `.java`, `.cs`
+
+Non-code files (`.md`, `.json`, `.yml`, etc.) are automatically skipped.
 
 ## License
 
