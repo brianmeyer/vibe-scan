@@ -197,12 +197,12 @@ export const DB_QUERY_PATTERNS: Pattern[] = [
   /db\s*\.\s*query\s*\(/,
   /\.collection\s*\(/,
   /\.getAll\s*\(/,
-  // Python SQLAlchemy
+  // Python SQLAlchemy (require ORM context to avoid matching JS Array.filter)
   /\.query\s*\(\s*\w+\s*\)/,
   /session\s*\.\s*query\s*\(/,
-  /\.filter\s*\(/,
-  /\.filter_by\s*\(/,
-  /\.all\s*\(\s*\)/,
+  /\.query\s*\([^)]*\)\s*\.filter\s*\(/, // session.query(Model).filter()
+  /\.filter_by\s*\(/, // SQLAlchemy-specific (JS doesn't have filter_by)
+  /\.all\s*\(\s*\)/, // .all() is typically ORM
   // Django ORM
   /\.objects\s*\.\s*(?:all|filter|exclude)\s*\(/,
   /QuerySet/,
