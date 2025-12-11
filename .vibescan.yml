@@ -18,3 +18,10 @@ rules:
   # Console debugging is intentional in this codebase for logging
   CONSOLE_DEBUG:
     enabled: false
+
+# Enable GitHub issue creation for high-severity findings
+reporting:
+  create_issues: true
+  max_issues_per_pr: 3
+  issue_severity_threshold: "high"
+  issue_labels: ["vibe-scan", "production-risk"]

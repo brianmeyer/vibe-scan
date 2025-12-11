@@ -402,7 +402,6 @@ function attemptJsonRepair(content: string): string | null {
   let lastCompleteIssue = -1;
   let match;
 
-  // vibescan-ignore-next-line UNSAFE_EVAL
   while ((match = severityPattern.exec(jsonStr)) !== null) {
     lastCompleteIssue = match.index + match[0].length;
   }
@@ -849,12 +848,15 @@ export async function generateExecutiveSummary(
 
     const prompt = buildExecutiveSummaryPrompt(input);
 
-    const completion = await client.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
-      max_tokens: 256,
-    });
+    // Use retry logic for rate limit resilience
+    const completion = await withRetry(() =>
+      client.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 256,
+      })
+    );
 
     // Record token usage
     if (input.installationId && completion.usage) {
@@ -1072,12 +1074,15 @@ export async function validateFindingsWithLlm(
 
     const prompt = buildValidationPrompt(cappedFindings, codeContext);
 
-    const completion = await client.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.1,
-      max_tokens: 2048,
-    });
+    // Use retry logic for rate limit resilience
+    const completion = await withRetry(() =>
+      client.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1,
+        max_tokens: 2048,
+      })
+    );
 
     const tokensUsed = completion.usage?.total_tokens || 0;
 

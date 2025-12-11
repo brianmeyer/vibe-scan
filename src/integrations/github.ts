@@ -25,6 +25,7 @@ import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../conf
 import { extractFileStructure } from "../analysis/structure";
 import { SECRET_PATTERNS, CODE_EXTENSIONS } from "../analysis/patterns";
 import { canAnalyzeWithAST } from "../analysis/ast";
+import { handleMarketplacePurchase, MarketplacePurchasePayload, getInstallationLimits } from "../plans";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",
@@ -1186,7 +1187,10 @@ export function registerEventHandlers(): void {
       const mediumCount = staticFindings.filter((f) => f.severity === "medium").length;
       const lowCount = staticFindings.filter((f) => f.severity === "low").length;
 
-      // Run LLM analysis on candidate files
+      // Check plan limits for this installation
+      const planLimits = await getInstallationLimits(installationId);
+
+      // Run LLM analysis on candidate files (if enabled for this plan)
       const llmResults: LlmAnalysisResult[] = [];
       const llmIssues: LlmIssue[] = [];
 
@@ -1201,14 +1205,18 @@ export function registerEventHandlers(): void {
       }));
 
       try {
-        const candidates = selectLlmCandidates(prFiles, staticFindings);
-        if (!candidates.length) {
-          console.log("[LLM] No LLM candidates selected for this PR");
+        // Skip LLM analysis if not enabled for this plan
+        if (!planLimits.llmEnabled) {
+          console.log(`[LLM] LLM analysis not enabled for this plan, skipping`);
         } else {
-          console.log(`[LLM] Selected ${candidates.length} candidate patch(es) for analysis`);
-        }
+          const candidates = selectLlmCandidates(prFiles, staticFindings);
+          if (!candidates.length) {
+            console.log("[LLM] No LLM candidates selected for this PR");
+          } else {
+            console.log(`[LLM] Selected ${candidates.length} candidate patch(es) for analysis`);
+          }
 
-        for (const candidate of candidates) {
+          for (const candidate of candidates) {
           // Filter static findings to those relevant to this candidate file
           const fileFindings = staticFindingSummaries.filter((f) => f.file === candidate.file);
 
@@ -1251,7 +1259,8 @@ export function registerEventHandlers(): void {
               ...issue,
             });
           }
-        }
+          }
+        } // end else (llmEnabled)
       } catch (err) {
         console.error("[LLM] Unexpected error during LLM analysis:", err instanceof Error ? err.message : "unknown error");
       }
@@ -1348,9 +1357,55 @@ export function registerEventHandlers(): void {
 
       text += "\n\n## AI (LLM) analysis findings\n\n";
 
-      if (llmIssueCount) {
+      // Filter LLM issues to exclude those that overlap with filtered static findings
+      // This prevents showing "Hardcoded secrets" in LLM section when HARDCODED_SECRET was filtered
+      const filteredLlmIssues = validatedFindings
+        ? llmIssues.filter((issue) => {
+            // If the LLM issue references a specific file, check if that file
+            // has filtered findings that likely overlap with this issue type
+            if (!issue.file) return true; // Keep cross-cutting issues without file reference
+
+            // Build a set of files with filtered findings
+            const filteredFiles = new Set(
+              validatedFindings
+                .filter((v) => v.likelyFalsePositive)
+                .map((v) => v.file)
+            );
+
+            // If this file has filtered findings, check for overlap
+            if (filteredFiles.has(issue.file)) {
+              // Map LLM issue kinds to related static rule IDs
+              const llmToStaticRuleMap: Record<string, string[]> = {
+                ENVIRONMENT_ASSUMPTION: ["HARDCODED_SECRET", "HARDCODED_URL", "PROTOTYPE_INFRA"],
+                DATA_CONTRACT_RISK: ["HARDCODED_SECRET", "UNVALIDATED_INPUT", "DATA_SHAPE_ASSUMPTION"],
+                RESILIENCE_GAP: ["SILENT_ERROR", "UNSAFE_IO"],
+                OBSERVABILITY_GAP: ["SILENT_ERROR"],
+                SCALING_RISK: ["UNBOUNDED_QUERY", "MEMORY_RISK", "LOOPED_IO"],
+                CONCURRENCY_RISK: ["SHARED_FILE_WRITE", "RETRY_STORM_RISK", "GLOBAL_MUTATION"],
+              };
+
+              const relatedStaticRules = llmToStaticRuleMap[issue.kind] || [];
+
+              // Check if any filtered finding in this file matches a related rule
+              const hasOverlappingFilteredFinding = validatedFindings.some(
+                (v) => v.likelyFalsePositive && v.file === issue.file && relatedStaticRules.includes(v.ruleId)
+              );
+
+              if (hasOverlappingFilteredFinding) {
+                console.log(`[PR Check] Filtering LLM issue "${issue.title}" - overlaps with filtered static finding in ${issue.file}`);
+                return false;
+              }
+            }
+
+            return true;
+          })
+        : llmIssues;
+
+      const filteredLlmIssueCount = filteredLlmIssues.length;
+
+      if (filteredLlmIssueCount) {
         // Group issues by kind for better organization
-        const groupedIssues = groupIssuesByKind(llmIssues);
+        const groupedIssues = groupIssuesByKind(filteredLlmIssues);
         let issuesShown = 0;
         const maxLlmToShow = 10;
 
@@ -1374,15 +1429,23 @@ export function registerEventHandlers(): void {
           text += "\n";
         }
 
-        if (llmIssueCount > maxLlmToShow) {
-          text += `_+ ${llmIssueCount - maxLlmToShow} more AI finding(s) not shown._\n`;
+        if (filteredLlmIssueCount > maxLlmToShow) {
+          text += `_+ ${filteredLlmIssueCount - maxLlmToShow} more AI finding(s) not shown._\n`;
         }
       } else {
         text += "_No additional AI-identified issues beyond static analysis._\n";
       }
 
-      // Add architecture risk summary
-      const archSummary = computeArchitectureRiskSummary({ staticFindings, llmIssues });
+      // Add architecture risk summary - use filtered findings if validation succeeded
+      const findingsForArchSummary = validatedFindings
+        ? staticFindings.filter((f) => {
+            const validated = validatedFindings.find(
+              (v) => v.file === f.file && v.line === (f.line ?? 0) && v.ruleId === f.kind
+            );
+            return !validated?.likelyFalsePositive;
+          })
+        : staticFindings;
+      const archSummary = computeArchitectureRiskSummary({ staticFindings: findingsForArchSummary, llmIssues: filteredLlmIssues });
       text += "\n\n" + buildArchitectureRiskSection(archSummary);
 
       // Create check run
@@ -1404,10 +1467,10 @@ export function registerEventHandlers(): void {
         `[GitHub App] Created Vibe Scan check run with ${staticFindings.length} static finding(s) and ${llmIssueCount} AI finding(s) on ${owner}/${repo}@${headSha}`
       );
 
-      // Post high-risk PR comment if there are high-severity findings
+      // Post high-risk PR comment if there are high-severity findings (use filtered findings)
       const commentBody = buildHighRiskCommentBody({
-        staticFindings,
-        llmIssues,
+        staticFindings: findingsForArchSummary,
+        llmIssues: filteredLlmIssues,
         vibeScore,
         vibeLabel,
         archSummary,
@@ -1522,6 +1585,19 @@ export function registerEventHandlers(): void {
       } catch (error) {
         console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error instanceof Error ? error.message : "unknown error");
       }
+    }
+  });
+
+  // Handle GitHub Marketplace purchase events for billing tiers
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  webhooks.on("marketplace_purchase" as any, async ({ id, name, payload }: { id: string; name: string; payload: MarketplacePurchasePayload }) => {
+    console.log(`[GitHub App] Received marketplace_purchase event (id: ${id}): ${payload.action}`);
+
+    try {
+      await handleMarketplacePurchase(payload);
+      // vibescan-ignore-next-line SILENT_ERROR - Webhook handlers should not propagate errors to prevent cascading failures
+    } catch (error) {
+      console.error("[GitHub App] Error handling marketplace purchase:", error instanceof Error ? error.message : "unknown error");
     }
   });
 

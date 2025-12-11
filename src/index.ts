@@ -266,6 +266,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Unhandled rejection handler (don't crash on unhandled promises)
+// vibescan-ignore-next-line SILENT_ERROR
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled rejection", {
     error: reason instanceof Error ? reason.message : "unknown",

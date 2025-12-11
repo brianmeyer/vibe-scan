@@ -506,8 +506,8 @@ export const UNSAFE_EVAL_PATTERNS: Pattern[] = [
   /new\s+Function\s*\(/,
   /setTimeout\s*\(\s*['"`]/,  // setTimeout with string (not function)
   /setInterval\s*\(\s*['"`]/,  // setInterval with string (not function)
-  // Python
-  /\bexec\s*\(/,
+  // Python exec() - use negative lookbehind to exclude JS regex .exec() method calls
+  /(?<!\.)exec\s*\(/,
   /\beval\s*\(/,
   /compile\s*\([^)]*,\s*['"]exec['"]/,
 ];
