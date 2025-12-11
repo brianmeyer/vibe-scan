@@ -10,6 +10,6 @@ export const config = {
   GROQ_API_KEY: process.env.GROQ_API_KEY,
   // Redis URL for Railway (e.g., redis://default:password@host:port)
   REDIS_URL: process.env.REDIS_URL,
-  // Monthly token quota per installation (default: 100,000)
-  MONTHLY_TOKEN_QUOTA: Number(process.env.MONTHLY_TOKEN_QUOTA) || 100000,
+  // Monthly token quota per installation (ALPHA: 5M, prod: 100k)
+  MONTHLY_TOKEN_QUOTA: Number(process.env.MONTHLY_TOKEN_QUOTA) || 5_000_000,
 };
