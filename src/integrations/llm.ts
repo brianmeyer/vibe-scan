@@ -763,3 +763,435 @@ export function groupIssuesByKind(issues: LlmIssue[]): Map<LlmIssueKind, LlmIssu
 
   return grouped;
 }
+
+// ============================================================================
+// Executive Summary Generation
+// ============================================================================
+
+/**
+ * Input for generating an executive summary.
+ */
+export interface ExecutiveSummaryInput {
+  /** Grouped static findings by rule kind */
+  findingsByKind: Map<string, { count: number; severity: string; files: string[] }>;
+  /** Total findings count */
+  totalFindings: number;
+  /** High severity count */
+  highCount: number;
+  /** Medium severity count */
+  mediumCount: number;
+  /** Vibe score (0-100) */
+  vibeScore: number;
+  /** Installation ID for quota tracking */
+  installationId?: number;
+}
+
+/**
+ * Build a prompt for generating an executive summary.
+ */
+function buildExecutiveSummaryPrompt(input: ExecutiveSummaryInput): string {
+  const findingsList = Array.from(input.findingsByKind.entries())
+    .map(([kind, data]) => `- ${kind}: ${data.count} finding(s), severity=${data.severity}, files: ${data.files.slice(0, 3).join(", ")}${data.files.length > 3 ? ` (+${data.files.length - 3} more)` : ""}`)
+    .join("\n");
+
+  return `You are a senior software engineer reviewing a pull request for production readiness.
+
+Based on the following static analysis findings, write a concise 2-3 sentence executive summary that:
+1. Highlights the most critical issues that need immediate attention
+2. Groups related problems (e.g., "multiple network calls lack error handling")
+3. Suggests the highest-priority fix
+
+FINDINGS SUMMARY:
+Total: ${input.totalFindings} findings (${input.highCount} high, ${input.mediumCount} medium)
+Vibe Score: ${input.vibeScore}/100
+
+BY CATEGORY:
+${findingsList}
+
+RULES:
+- Be concise and actionable (2-3 sentences max)
+- Focus on production risk, not code style
+- Use specific numbers ("7 fetch calls" not "several calls")
+- If score is 0-30, emphasize critical blockers
+- If score is 31-70, note areas needing attention
+- If score is 71-100, acknowledge good state with minor suggestions
+
+Respond with ONLY the summary text, no JSON or formatting.`;
+}
+
+/**
+ * Generate an executive summary of findings using LLM.
+ * Returns null if LLM is unavailable or quota exceeded.
+ */
+export async function generateExecutiveSummary(
+  input: ExecutiveSummaryInput
+): Promise<string | null> {
+  // Check if API key is configured
+  if (!config.GROQ_API_KEY) {
+    console.warn("[LLM] GROQ_API_KEY not configured, skipping executive summary");
+    return null;
+  }
+
+  // Check quota if installationId is provided
+  if (input.installationId) {
+    const quotaExceeded = await isQuotaExceeded(input.installationId);
+    if (quotaExceeded) {
+      console.warn("[LLM] Quota exceeded, skipping executive summary");
+      return null;
+    }
+  }
+
+  try {
+    const client = new OpenAI({
+      apiKey: config.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+    });
+
+    const prompt = buildExecutiveSummaryPrompt(input);
+
+    const completion = await client.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      max_tokens: 256,
+    });
+
+    // Record token usage
+    if (input.installationId && completion.usage) {
+      const totalTokens = completion.usage.total_tokens || 0;
+      await recordTokenUsage(input.installationId, totalTokens);
+      console.log(`[LLM] Executive summary used ${totalTokens} tokens`);
+    }
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      console.warn("[LLM] Empty executive summary response");
+      return null;
+    }
+
+    return content.trim();
+  } catch (error) {
+    // vibescan-ignore-next-line SILENT_ERROR - Intentional: LLM failure shouldn't block analysis
+    console.error("[LLM] Executive summary generation failed:", error instanceof Error ? error.message : "unknown");
+    return null;
+  }
+}
+
+// ============================================================================
+// Finding Validation with Confidence Scoring
+// ============================================================================
+
+/**
+ * A static finding with LLM-assigned confidence score.
+ */
+export interface ValidatedFinding {
+  /** Original rule ID */
+  ruleId: string;
+  /** File path */
+  file: string;
+  /** Line number */
+  line: number;
+  /** Original severity */
+  severity: "low" | "medium" | "high";
+  /** Original summary */
+  summary: string;
+  /** LLM-assigned confidence score (0.0 - 1.0) */
+  confidence: number;
+  /** LLM reasoning for the confidence score */
+  reasoning?: string;
+  /** Whether the finding is likely a false positive */
+  likelyFalsePositive: boolean;
+}
+
+/**
+ * Input for validating findings with LLM.
+ */
+export interface ValidateFindingsInput {
+  /** Static findings to validate */
+  findings: StaticFindingSummary[];
+  /** Code snippets for context, keyed by file path */
+  codeContext: Map<string, string>;
+  /** Installation ID for quota tracking */
+  installationId?: number;
+  /** Confidence threshold (findings below this are marked as likely false positive) */
+  confidenceThreshold?: number;
+}
+
+/**
+ * Result of validating findings.
+ */
+export interface ValidateFindingsResult {
+  /** Validated findings with confidence scores */
+  validatedFindings: ValidatedFinding[];
+  /** Number of findings filtered as likely false positives */
+  filteredCount: number;
+  /** Total tokens used for validation */
+  tokensUsed: number;
+}
+
+/**
+ * Build a prompt for validating static findings.
+ */
+function buildValidationPrompt(
+  findings: StaticFindingSummary[],
+  codeContext: Map<string, string>
+): string {
+  // Group findings by file for context
+  const findingsByFile = new Map<string, StaticFindingSummary[]>();
+  for (const finding of findings) {
+    const existing = findingsByFile.get(finding.file) || [];
+    existing.push(finding);
+    findingsByFile.set(finding.file, existing);
+  }
+
+  // Build code context sections
+  const codeContextSections: string[] = [];
+  for (const [file, code] of codeContext.entries()) {
+    const fileFindings = findingsByFile.get(file) || [];
+    if (fileFindings.length > 0) {
+      codeContextSections.push(`### ${file}
+\`\`\`
+${code.slice(0, 3000)}${code.length > 3000 ? "\n... (truncated)" : ""}
+\`\`\`
+
+Findings in this file:
+${fileFindings.map(f => `- Line ${f.line}: ${f.ruleId} - ${f.summary}`).join("\n")}`);
+    }
+  }
+
+  const findingsJson = JSON.stringify(
+    findings.map(f => ({
+      id: `${f.file}:${f.line}:${f.ruleId}`,
+      ruleId: f.ruleId,
+      file: f.file,
+      line: f.line,
+      severity: f.severity,
+      summary: f.summary,
+    })),
+    null,
+    2
+  );
+
+  return `You are a senior production engineer validating static analysis findings for accuracy.
+
+Your task is to review each finding and assign a confidence score (0.0 to 1.0) indicating how likely it is to be a TRUE POSITIVE (real production risk).
+
+IMPORTANT SCORING GUIDELINES:
+- 0.9-1.0: Definite true positive - clear production risk with strong evidence
+- 0.7-0.89: Likely true positive - probable risk, may need context
+- 0.5-0.69: Uncertain - could go either way, needs human review
+- 0.3-0.49: Likely false positive - pattern match but probably safe in context
+- 0.0-0.29: Definite false positive - clear safe usage, not a real risk
+
+COMMON FALSE POSITIVE PATTERNS TO WATCH FOR:
+- Array.filter(), Array.map() flagged as database queries (UNBOUNDED_QUERY)
+- Intentional empty catch blocks with logging (SILENT_ERROR)
+- Test/mock code flagged for production risks
+- TypeScript type narrowing misidentified as unsafe
+- Environment-specific code with proper guards
+- Prototype/development files in expected locations
+
+ARCHITECTURE-SPECIFIC VALIDATION (be especially careful):
+- STATEFUL_SERVICE: Only flag if actual shared mutable state across requests
+- PROTOTYPE_INFRA: Only flag if truly temporary/experimental patterns
+- UNBOUNDED_QUERY: Must be actual database/API calls, not array operations
+- GLOBAL_MUTATION: Check if mutation is initialization vs. runtime modification
+
+${codeContextSections.length > 0 ? `CODE CONTEXT:\n${codeContextSections.join("\n\n")}` : ""}
+
+FINDINGS TO VALIDATE:
+\`\`\`json
+${findingsJson}
+\`\`\`
+
+OUTPUT FORMAT:
+You MUST respond with ONLY a valid JSON array. No explanations, no markdown, no code blocks - just the raw JSON array.
+
+Example output:
+[{"id":"src/file.ts:10:RULE_ID","confidence":0.8,"reasoning":"Real risk because..."},{"id":"src/other.ts:20:RULE_ID","confidence":0.2,"reasoning":"False positive because..."}]
+
+Your response (just the JSON array, nothing else):
+
+RULES:
+- Output ONLY the JSON array - no text before or after
+- Validate EVERY finding in the input list
+- Be conservative - when in doubt, give benefit of the doubt to the code (lower confidence)
+- Focus on whether the finding represents a REAL production risk
+- Consider the code context when available`;
+}
+
+/**
+ * Validate static findings with LLM to filter false positives and assign confidence scores.
+ *
+ * This is the key function for implementing broad static detection + LLM filtering.
+ * It takes static findings and returns them with confidence scores, allowing the
+ * display layer to filter or highlight based on confidence.
+ */
+export async function validateFindingsWithLlm(
+  input: ValidateFindingsInput
+): Promise<ValidateFindingsResult | null> {
+  const { findings, codeContext, installationId, confidenceThreshold = 0.6 } = input;
+
+  // Check if API key is configured
+  if (!config.GROQ_API_KEY) {
+    console.warn("[LLM] GROQ_API_KEY not configured, skipping finding validation");
+    return null;
+  }
+
+  // Check quota if installationId is provided
+  if (installationId) {
+    const quotaExceeded = await isQuotaExceeded(installationId);
+    if (quotaExceeded) {
+      console.warn("[LLM] Quota exceeded, skipping finding validation");
+      return null;
+    }
+  }
+
+  // Nothing to validate
+  if (findings.length === 0) {
+    return {
+      validatedFindings: [],
+      filteredCount: 0,
+      tokensUsed: 0,
+    };
+  }
+
+  // Cap findings to avoid token explosion (process in batches if needed)
+  const MAX_FINDINGS_PER_CALL = 30;
+  const cappedFindings = findings.slice(0, MAX_FINDINGS_PER_CALL);
+
+  if (findings.length > MAX_FINDINGS_PER_CALL) {
+    console.warn(`[LLM] Capping validation to ${MAX_FINDINGS_PER_CALL} findings (${findings.length} total)`);
+  }
+
+  try {
+    const client = new OpenAI({
+      apiKey: config.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+    });
+
+    const prompt = buildValidationPrompt(cappedFindings, codeContext);
+
+    const completion = await client.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
+      max_tokens: 2048,
+    });
+
+    const tokensUsed = completion.usage?.total_tokens || 0;
+
+    // Record token usage
+    if (installationId) {
+      await recordTokenUsage(installationId, tokensUsed);
+      console.log(`[LLM] Finding validation used ${tokensUsed} tokens`);
+    }
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      console.warn("[LLM] Empty validation response");
+      return null;
+    }
+
+    // Parse JSON response - try multiple extraction methods
+    let parsed: unknown;
+    try {
+      // Method 1: Try to find JSON array directly
+      let jsonStr = content;
+
+      // Method 2: Extract from markdown code block
+      const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1].trim();
+      } else {
+        // Method 3: Find JSON array pattern
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          jsonStr = jsonMatch[0];
+        }
+      }
+
+      parsed = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error("[LLM] Failed to parse validation response:", parseError instanceof Error ? parseError.message : "unknown");
+      // Log truncated response for debugging
+      const truncated = content.length > 500 ? content.slice(0, 500) + "...[truncated]" : content;
+      console.error("[LLM] Raw response:", truncated);
+      return null;
+    }
+
+    if (!Array.isArray(parsed)) {
+      console.warn("[LLM] Invalid validation response structure - expected array, got:", typeof parsed);
+      return null;
+    }
+
+    console.log(`[LLM] Successfully parsed ${parsed.length} validation results`);
+
+    // Build a map of validation results
+    const validationMap = new Map<string, { confidence: number; reasoning?: string }>();
+    for (const item of parsed) {
+      if (item && typeof item === "object") {
+        const obj = item as Record<string, unknown>;
+        if (typeof obj.id === "string" && typeof obj.confidence === "number") {
+          validationMap.set(obj.id, {
+            confidence: Math.max(0, Math.min(1, obj.confidence)),
+            reasoning: typeof obj.reasoning === "string" ? obj.reasoning : undefined,
+          });
+        }
+      }
+    }
+
+    // Map findings to validated findings
+    const validatedFindings: ValidatedFinding[] = [];
+    let filteredCount = 0;
+
+    for (const finding of cappedFindings) {
+      const id = `${finding.file}:${finding.line}:${finding.ruleId}`;
+      const validation = validationMap.get(id);
+
+      // Default to 0.7 confidence if LLM didn't validate this finding
+      const confidence = validation?.confidence ?? 0.7;
+      const likelyFalsePositive = confidence < confidenceThreshold;
+
+      if (likelyFalsePositive) {
+        filteredCount++;
+      }
+
+      validatedFindings.push({
+        ruleId: finding.ruleId,
+        file: finding.file,
+        line: finding.line,
+        severity: finding.severity,
+        summary: finding.summary,
+        confidence,
+        reasoning: validation?.reasoning,
+        likelyFalsePositive,
+      });
+    }
+
+    // Add any findings that weren't capped (without validation)
+    for (let i = MAX_FINDINGS_PER_CALL; i < findings.length; i++) {
+      const finding = findings[i];
+      validatedFindings.push({
+        ruleId: finding.ruleId,
+        file: finding.file,
+        line: finding.line,
+        severity: finding.severity,
+        summary: finding.summary,
+        confidence: 0.7, // Default confidence for uncapped findings
+        reasoning: "Not validated due to batch limit",
+        likelyFalsePositive: false,
+      });
+    }
+
+    return {
+      validatedFindings,
+      filteredCount,
+      tokensUsed,
+    };
+  } catch (error) {
+    // vibescan-ignore-next-line SILENT_ERROR - Intentional: LLM failure shouldn't block analysis
+    console.error("[LLM] Finding validation failed:", error instanceof Error ? error.message : "unknown");
+    return null;
+  }
+}

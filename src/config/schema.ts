@@ -51,6 +51,20 @@ export interface VibeScanLlmConfig {
    * Default: 50
    */
   max_files?: number;
+
+  /**
+   * Whether to validate static findings with LLM for confidence scoring.
+   * When enabled, static findings are sent to LLM to filter false positives.
+   * Default: true
+   */
+  validate_findings?: boolean;
+
+  /**
+   * Minimum confidence score (0.0 - 1.0) to display a finding.
+   * Findings below this threshold are filtered out.
+   * Default: 0.6
+   */
+  confidence_threshold?: number;
 }
 
 /**
@@ -69,6 +83,35 @@ export interface VibeScanFilesConfig {
    * Example: ["playground/**", "experiments/**"]
    */
   prototype_zone?: string[];
+}
+
+/**
+ * Reporting/output configuration options.
+ */
+export interface VibeScanReportingConfig {
+  /**
+   * Whether to create GitHub issues for high-severity findings.
+   * Default: false
+   */
+  create_issues?: boolean;
+
+  /**
+   * Maximum number of issues to create per PR.
+   * Default: 3
+   */
+  max_issues_per_pr?: number;
+
+  /**
+   * Minimum severity to create issues for.
+   * Default: "high"
+   */
+  issue_severity_threshold?: "high" | "medium" | "low";
+
+  /**
+   * Labels to add to created issues.
+   * Default: ["vibe-scan", "production-risk"]
+   */
+  issue_labels?: string[];
 }
 
 /**
@@ -102,6 +145,11 @@ export interface VibeScanConfig {
   llm?: VibeScanLlmConfig;
 
   /**
+   * Reporting/output configuration options.
+   */
+  reporting?: VibeScanReportingConfig;
+
+  /**
    * Path-specific rule overrides.
    * Applied in order; later overrides take precedence.
    */
@@ -121,11 +169,20 @@ export interface RequiredLlmConfig {
   max_model_tokens: number;
   temperature: number;
   max_files: number;
+  validate_findings: boolean;
+  confidence_threshold: number;
 }
 
 export interface RequiredFilesConfig {
   ignore: string[];
   prototype_zone: string[];
+}
+
+export interface RequiredReportingConfig {
+  create_issues: boolean;
+  max_issues_per_pr: number;
+  issue_severity_threshold: "high" | "medium" | "low";
+  issue_labels: string[];
 }
 
 /**
@@ -144,6 +201,8 @@ export const DEFAULT_LLM_CONFIG: RequiredLlmConfig = {
   max_model_tokens: 4096,
   temperature: 0.1,
   max_files: 50,
+  validate_findings: true,
+  confidence_threshold: 0.6,
 };
 
 /**
@@ -152,4 +211,14 @@ export const DEFAULT_LLM_CONFIG: RequiredLlmConfig = {
 export const DEFAULT_FILES_CONFIG: RequiredFilesConfig = {
   ignore: [],
   prototype_zone: [],
+};
+
+/**
+ * Default values for reporting configuration.
+ */
+export const DEFAULT_REPORTING_CONFIG: RequiredReportingConfig = {
+  create_issues: false,
+  max_issues_per_pr: 3,
+  issue_severity_threshold: "high",
+  issue_labels: ["vibe-scan", "production-risk"],
 };

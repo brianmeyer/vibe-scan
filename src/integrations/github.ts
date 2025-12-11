@@ -15,6 +15,10 @@ import {
   LLM_ISSUE_KIND_LABELS,
   groupIssuesByKind,
   StaticFindingSummary,
+  generateExecutiveSummary,
+  ExecutiveSummaryInput,
+  validateFindingsWithLlm,
+  ValidatedFinding,
 } from "./llm";
 import { computeVibeScore, VibeScoreResult } from "../analysis/scoring";
 import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../config/loader";
@@ -347,6 +351,7 @@ function buildHighRiskCommentBody(params: {
       { emoji: "🔀", name: "Concurrency", data: archSummary.concurrency },
       { emoji: "⚠️", name: "Errors", data: archSummary.errorHandling },
       { emoji: "📋", name: "Data", data: archSummary.dataIntegrity },
+      { emoji: "🔒", name: "Security", data: archSummary.security },
     ];
 
     const activeCategories = categories.filter((c) => c.data.count > 0);
@@ -444,6 +449,7 @@ interface ArchitectureRiskSummary {
   concurrency: { count: number; topIssues: ArchIssue[] };
   errorHandling: { count: number; topIssues: ArchIssue[] };
   dataIntegrity: { count: number; topIssues: ArchIssue[] };
+  security: { count: number; topIssues: ArchIssue[] };
 }
 
 /**
@@ -456,6 +462,8 @@ const SCALING_KINDS = new Set([
   "NO_CACHING",
   "MEMORY_RISK",
   "LOOPED_IO",
+  "BLOCKING_OPERATION",
+  "STATEFUL_SERVICE",
 ]);
 
 const CONCURRENCY_KINDS = new Set([
@@ -479,6 +487,13 @@ const DATA_INTEGRITY_KINDS = new Set([
   "DATA_SHAPE_ASSUMPTION",
   "MIXED_RESPONSE_SHAPES",
   "HIDDEN_ASSUMPTIONS",
+  "HARDCODED_SECRET",
+]);
+
+const SECURITY_KINDS = new Set([
+  "UNSAFE_EVAL",
+  "HARDCODED_URL",
+  "PROTOTYPE_INFRA",
 ]);
 
 /** Max top issues to show per category */
@@ -499,6 +514,8 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   PROTOTYPE_INFRA: "Non-production infrastructure",
   HARDCODED_SECRET: "Hardcoded credential",
   UNSAFE_EVAL: "Dynamic code execution",
+  HARDCODED_URL: "Hardcoded URL/localhost",
+  BLOCKING_OPERATION: "Blocking synchronous operation",
   SCALING_RISK: "Scaling concern",
   CONCURRENCY_RISK: "Concurrency issue",
   RESILIENCE_GAP: "Missing fault tolerance",
@@ -506,6 +523,330 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   DATA_CONTRACT_RISK: "Data validation issue",
   ENVIRONMENT_ASSUMPTION: "Environment-specific code",
 };
+
+// ============================================================================
+// Grouped Findings Display
+// ============================================================================
+
+/**
+ * Grouped finding info for display.
+ */
+interface GroupedFinding {
+  kind: string;
+  count: number;
+  severity: "high" | "medium" | "low";
+  description: string;
+  locations: { file: string; line?: number }[];
+}
+
+/**
+ * Group static findings by rule kind for better display.
+ */
+function groupStaticFindingsByKind(findings: Finding[]): GroupedFinding[] {
+  const groups = new Map<string, GroupedFinding>();
+
+  for (const f of findings) {
+    const existing = groups.get(f.kind);
+    if (existing) {
+      existing.count++;
+      existing.locations.push({ file: f.file, line: f.line });
+      // Upgrade severity if higher
+      if (f.severity === "high" && existing.severity !== "high") {
+        existing.severity = "high";
+      } else if (f.severity === "medium" && existing.severity === "low") {
+        existing.severity = "medium";
+      }
+    } else {
+      groups.set(f.kind, {
+        kind: f.kind,
+        count: 1,
+        severity: f.severity,
+        description: RULE_DESCRIPTIONS[f.kind] || f.message || f.kind,
+        locations: [{ file: f.file, line: f.line }],
+      });
+    }
+  }
+
+  // Sort by severity (high first) then by count (descending)
+  return Array.from(groups.values()).sort((a, b) => {
+    const severityOrder = { high: 0, medium: 1, low: 2 };
+    if (severityOrder[a.severity] !== severityOrder[b.severity]) {
+      return severityOrder[a.severity] - severityOrder[b.severity];
+    }
+    return b.count - a.count;
+  });
+}
+
+/**
+ * Build grouped findings display text.
+ */
+function buildGroupedFindingsDisplay(
+  groupedFindings: GroupedFinding[],
+  maxGroupsToShow: number = 8,
+  maxLocationsPerGroup: number = 3
+): string {
+  if (groupedFindings.length === 0) {
+    return "_No static issues detected in this diff._\n";
+  }
+
+  let text = "";
+  let groupsShown = 0;
+  let totalFindingsShown = 0;
+  const totalFindings = groupedFindings.reduce((sum, g) => sum + g.count, 0);
+
+  for (const group of groupedFindings) {
+    if (groupsShown >= maxGroupsToShow) break;
+
+    const severityBadge = group.severity.toUpperCase();
+    const countLabel = group.count > 1 ? `(${group.count} findings)` : "(1 finding)";
+
+    text += `### [${severityBadge}] ${group.kind} ${countLabel}\n`;
+    text += `${group.description}\n`;
+
+    // Show locations
+    const locationsToShow = group.locations.slice(0, maxLocationsPerGroup);
+    const locationStrings = locationsToShow.map(loc =>
+      loc.line ? `${loc.file}:${loc.line}` : loc.file
+    );
+
+    text += `📍 ${locationStrings.join(", ")}`;
+    if (group.locations.length > maxLocationsPerGroup) {
+      text += ` (+${group.locations.length - maxLocationsPerGroup} more)`;
+    }
+    text += "\n\n";
+
+    groupsShown++;
+    totalFindingsShown += group.count;
+  }
+
+  if (groupedFindings.length > maxGroupsToShow) {
+    const remainingGroups = groupedFindings.length - maxGroupsToShow;
+    const remainingFindings = totalFindings - totalFindingsShown;
+    text += `_+ ${remainingGroups} more issue type(s) with ${remainingFindings} finding(s) not shown._\n`;
+  }
+
+  return text;
+}
+
+// ============================================================================
+// Validated Findings Display with Confidence Scores
+// ============================================================================
+
+/**
+ * Grouped validated finding with confidence info.
+ */
+interface GroupedValidatedFinding {
+  kind: string;
+  count: number;
+  severity: "high" | "medium" | "low";
+  description: string;
+  avgConfidence: number;
+  locations: { file: string; line?: number; confidence: number }[];
+  filteredCount: number; // How many were filtered as likely false positives
+}
+
+/**
+ * Get confidence badge emoji based on score.
+ */
+function getConfidenceBadge(confidence: number): string {
+  if (confidence >= 0.9) return "🔴"; // Very high confidence
+  if (confidence >= 0.7) return "🟠"; // High confidence
+  if (confidence >= 0.5) return "🟡"; // Medium confidence
+  return "⚪"; // Low confidence (likely false positive)
+}
+
+/**
+ * Get confidence label text.
+ */
+function getConfidenceLabel(confidence: number): string {
+  if (confidence >= 0.9) return "very high";
+  if (confidence >= 0.7) return "high";
+  if (confidence >= 0.5) return "medium";
+  return "low";
+}
+
+/**
+ * Group validated findings by rule kind for display.
+ */
+function groupValidatedFindingsByKind(
+  validatedFindings: ValidatedFinding[],
+  confidenceThreshold: number
+): GroupedValidatedFinding[] {
+  const groups = new Map<string, GroupedValidatedFinding>();
+
+  for (const f of validatedFindings) {
+    const existing = groups.get(f.ruleId);
+    if (existing) {
+      if (!f.likelyFalsePositive) {
+        existing.count++;
+        existing.locations.push({ file: f.file, line: f.line, confidence: f.confidence });
+        // Update average confidence
+        const totalConfidence = existing.avgConfidence * (existing.locations.length - 1) + f.confidence;
+        existing.avgConfidence = totalConfidence / existing.locations.length;
+        // Upgrade severity if higher
+        if (f.severity === "high" && existing.severity !== "high") {
+          existing.severity = "high";
+        } else if (f.severity === "medium" && existing.severity === "low") {
+          existing.severity = "medium";
+        }
+      } else {
+        existing.filteredCount++;
+      }
+    } else {
+      if (!f.likelyFalsePositive) {
+        groups.set(f.ruleId, {
+          kind: f.ruleId,
+          count: 1,
+          severity: f.severity,
+          description: RULE_DESCRIPTIONS[f.ruleId] || f.summary || f.ruleId,
+          avgConfidence: f.confidence,
+          locations: [{ file: f.file, line: f.line, confidence: f.confidence }],
+          filteredCount: 0,
+        });
+      } else {
+        groups.set(f.ruleId, {
+          kind: f.ruleId,
+          count: 0,
+          severity: f.severity,
+          description: RULE_DESCRIPTIONS[f.ruleId] || f.summary || f.ruleId,
+          avgConfidence: 0,
+          locations: [],
+          filteredCount: 1,
+        });
+      }
+    }
+  }
+
+  // Filter out groups with no remaining findings after confidence filtering
+  const activeGroups = Array.from(groups.values()).filter(g => g.count > 0);
+
+  // Sort by severity (high first), then by average confidence (descending)
+  return activeGroups.sort((a, b) => {
+    const severityOrder = { high: 0, medium: 1, low: 2 };
+    if (severityOrder[a.severity] !== severityOrder[b.severity]) {
+      return severityOrder[a.severity] - severityOrder[b.severity];
+    }
+    return b.avgConfidence - a.avgConfidence;
+  });
+}
+
+/**
+ * Build display for validated findings with confidence scores.
+ */
+function buildValidatedFindingsDisplay(
+  groupedFindings: GroupedValidatedFinding[],
+  filteredCount: number,
+  maxGroupsToShow: number = 8,
+  maxLocationsPerGroup: number = 3
+): string {
+  if (groupedFindings.length === 0 && filteredCount === 0) {
+    return "_No static issues detected in this diff._\n";
+  }
+
+  if (groupedFindings.length === 0 && filteredCount > 0) {
+    return `_All ${filteredCount} static finding(s) were determined to be likely false positives by LLM validation._\n`;
+  }
+
+  let text = "";
+  let groupsShown = 0;
+  let totalFindingsShown = 0;
+  const totalFindings = groupedFindings.reduce((sum, g) => sum + g.count, 0);
+
+  for (const group of groupedFindings) {
+    if (groupsShown >= maxGroupsToShow) break;
+
+    const severityBadge = group.severity.toUpperCase();
+    const confidenceBadge = getConfidenceBadge(group.avgConfidence);
+    const confidenceLabel = getConfidenceLabel(group.avgConfidence);
+    const countLabel = group.count > 1 ? `(${group.count} findings)` : "(1 finding)";
+
+    text += `### ${confidenceBadge} [${severityBadge}] ${group.kind} ${countLabel}\n`;
+    text += `${group.description} • _${confidenceLabel} confidence_\n`;
+
+    // Show locations with individual confidence
+    const locationsToShow = group.locations
+      .sort((a, b) => b.confidence - a.confidence) // Highest confidence first
+      .slice(0, maxLocationsPerGroup);
+
+    const locationStrings = locationsToShow.map(loc => {
+      const badge = getConfidenceBadge(loc.confidence);
+      const locStr = loc.line ? `${loc.file}:${loc.line}` : loc.file;
+      return `${badge} ${locStr}`;
+    });
+
+    text += `📍 ${locationStrings.join(", ")}`;
+    if (group.locations.length > maxLocationsPerGroup) {
+      text += ` (+${group.locations.length - maxLocationsPerGroup} more)`;
+    }
+    text += "\n\n";
+
+    groupsShown++;
+    totalFindingsShown += group.count;
+  }
+
+  if (groupedFindings.length > maxGroupsToShow) {
+    const remainingGroups = groupedFindings.length - maxGroupsToShow;
+    const remainingFindings = totalFindings - totalFindingsShown;
+    text += `_+ ${remainingGroups} more issue type(s) with ${remainingFindings} finding(s) not shown._\n`;
+  }
+
+  if (filteredCount > 0) {
+    text += `\n_${filteredCount} finding(s) filtered as likely false positives._\n`;
+  }
+
+  // Legend
+  text += `\n**Confidence Legend:** 🔴 very high • 🟠 high • 🟡 medium\n`;
+
+  return text;
+}
+
+/**
+ * Prepare input for executive summary generation.
+ */
+function prepareExecutiveSummaryInput(
+  findings: Finding[],
+  vibeScore: number,
+  installationId?: number
+): ExecutiveSummaryInput {
+  const findingsByKind = new Map<string, { count: number; severity: string; files: string[] }>();
+
+  for (const f of findings) {
+    const existing = findingsByKind.get(f.kind);
+    if (existing) {
+      existing.count++;
+      if (!existing.files.includes(f.file)) {
+        existing.files.push(f.file);
+      }
+      // Keep highest severity
+      if (f.severity === "high") existing.severity = "high";
+      else if (f.severity === "medium" && existing.severity !== "high") existing.severity = "medium";
+    } else {
+      findingsByKind.set(f.kind, {
+        count: 1,
+        severity: f.severity,
+        files: [f.file],
+      });
+    }
+  }
+
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const highCount = findings.filter(f => f.severity === "high").length;
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const mediumCount = findings.filter(f => f.severity === "medium").length;
+
+  return {
+    findingsByKind,
+    totalFindings: findings.length,
+    highCount,
+    mediumCount,
+    vibeScore,
+    installationId,
+  };
+}
+
+// ============================================================================
+// Architecture Risk Summary
+// ============================================================================
 
 /**
  * Compute an architecture risk summary from static findings and LLM issues.
@@ -522,6 +863,7 @@ function computeArchitectureRiskSummary(params: {
   const concurrencyIssues: ArchIssue[] = [];
   const errorHandlingIssues: ArchIssue[] = [];
   const dataIntegrityIssues: ArchIssue[] = [];
+  const securityIssues: ArchIssue[] = [];
 
   // Helper to convert finding to ArchIssue
   const toArchIssue = (f: Finding): ArchIssue => ({
@@ -554,6 +896,8 @@ function computeArchitectureRiskSummary(params: {
       errorHandlingIssues.push(toArchIssue(f));
     } else if (DATA_INTEGRITY_KINDS.has(f.kind)) {
       dataIntegrityIssues.push(toArchIssue(f));
+    } else if (SECURITY_KINDS.has(f.kind)) {
+      securityIssues.push(toArchIssue(f));
     }
   }
 
@@ -595,6 +939,10 @@ function computeArchitectureRiskSummary(params: {
       count: dataIntegrityIssues.length,
       topIssues: dataIntegrityIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
     },
+    security: {
+      count: securityIssues.length,
+      topIssues: securityIssues.slice(0, MAX_TOP_ISSUES_PER_CATEGORY),
+    },
   };
 }
 
@@ -609,7 +957,8 @@ function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string 
     summary.scaling.count > 0 ||
     summary.concurrency.count > 0 ||
     summary.errorHandling.count > 0 ||
-    summary.dataIntegrity.count > 0;
+    summary.dataIntegrity.count > 0 ||
+    summary.security.count > 0;
 
   if (!hasAnyRisks) {
     text += "_No major architectural risk patterns detected._\n";
@@ -639,8 +988,104 @@ function buildArchitectureRiskSection(summary: ArchitectureRiskSummary): string 
   text += formatCategory("🔀", "Concurrency", summary.concurrency);
   text += formatCategory("⚠️", "Error Handling", summary.errorHandling);
   text += formatCategory("📋", "Data Integrity", summary.dataIntegrity);
+  text += formatCategory("🔒", "Security", summary.security);
 
   return text;
+}
+
+// ============================================================================
+// GitHub Issue Creation
+// ============================================================================
+
+/**
+ * Create GitHub issues for high-severity findings.
+ */
+async function createIssuesForFindings(params: {
+  octokit: Octokit;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  prTitle: string;
+  findings: Finding[];
+  config: {
+    create_issues: boolean;
+    max_issues_per_pr: number;
+    issue_severity_threshold: "high" | "medium" | "low";
+    issue_labels: string[];
+  };
+}): Promise<number> {
+  const { octokit, owner, repo, prNumber, prTitle, findings, config } = params;
+
+  if (!config.create_issues) {
+    return 0;
+  }
+
+  // Filter findings by severity threshold
+  const severityOrder = { high: 3, medium: 2, low: 1 };
+  const thresholdValue = severityOrder[config.issue_severity_threshold];
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const eligibleFindings = findings.filter(
+    (f) => severityOrder[f.severity] >= thresholdValue
+  );
+
+  if (eligibleFindings.length === 0) {
+    console.log("[GitHub Issues] No findings meet severity threshold");
+    return 0;
+  }
+
+  // Group findings by kind to avoid creating duplicate issues
+  const groupedFindings = groupStaticFindingsByKind(eligibleFindings);
+
+  // Create issues for top groups (up to max)
+  let issuesCreated = 0;
+  for (const group of groupedFindings.slice(0, config.max_issues_per_pr)) {
+    try {
+      const locations = group.locations
+        .slice(0, 5)
+        .map((loc) => (loc.line ? `- \`${loc.file}:${loc.line}\`` : `- \`${loc.file}\``))
+        .join("\n");
+
+      const moreLocations =
+        group.locations.length > 5 ? `\n- _+${group.locations.length - 5} more locations_` : "";
+
+      const body = `## Vibe Scan: ${group.kind}
+
+**Severity:** ${group.severity.toUpperCase()}
+**PR:** #${prNumber} - ${prTitle}
+**Findings:** ${group.count}
+
+### Description
+${group.description}
+
+### Locations
+${locations}${moreLocations}
+
+### Recommended Action
+Review and address these findings before merging to production.
+
+---
+_This issue was automatically created by [Vibe Scan](https://github.com/apps/vibe-scan)._`;
+
+      await octokit.request("POST /repos/{owner}/{repo}/issues", {
+        owner,
+        repo,
+        title: `[Vibe Scan] ${group.kind}: ${group.count} finding(s) in PR #${prNumber}`,
+        body,
+        labels: config.issue_labels,
+      });
+
+      issuesCreated++;
+      console.log(`[GitHub Issues] Created issue for ${group.kind}`);
+    } catch (err) {
+      // vibescan-ignore-next-line SILENT_ERROR - Intentional: continue creating other issues
+      console.error(
+        `[GitHub Issues] Failed to create issue for ${group.kind}:`,
+        err instanceof Error ? err.message : "unknown"
+      );
+    }
+  }
+
+  return issuesCreated;
 }
 
 // ============================================================================
@@ -842,23 +1287,71 @@ export function registerEventHandlers(): void {
           `Detected ${totalFindings} static potential risk area(s) (H:${highCount}, M:${mediumCount}, L:${lowCount}) and ${llmIssueCount} AI-identified issue(s). Review before merging to production.`;
       }
 
+      // Generate executive summary using LLM (if findings exist)
+      let executiveSummary: string | null = null;
+      if (totalFindings > 0) {
+        try {
+          const summaryInput = prepareExecutiveSummaryInput(staticFindings, vibeScore, installationId);
+          executiveSummary = await generateExecutiveSummary(summaryInput);
+        } catch (err) {
+          console.warn("[PR Check] Executive summary generation failed:", err instanceof Error ? err.message : "unknown");
+        }
+      }
+
+      // Validate findings with LLM for confidence scoring (if enabled)
+      let validatedFindings: ValidatedFinding[] | null = null;
+      let validationFilteredCount = 0;
+      if (totalFindings > 0 && vibescanConfig.llm.validate_findings) {
+        try {
+          console.log("[PR Check] Validating static findings with LLM...");
+          const validationResult = await validateFindingsWithLlm({
+            findings: staticFindingSummaries,
+            codeContext: fileContents,
+            installationId,
+            confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+          });
+          if (validationResult) {
+            validatedFindings = validationResult.validatedFindings;
+            validationFilteredCount = validationResult.filteredCount;
+            console.log(
+              `[PR Check] Validation complete: ${validatedFindings.length} findings, ` +
+              `${validationFilteredCount} filtered as likely false positives, ` +
+              `${validationResult.tokensUsed} tokens used`
+            );
+          }
+        } catch (err) {
+          console.warn("[PR Check] Finding validation failed:", err instanceof Error ? err.message : "unknown");
+        }
+      }
+
       // Build markdown details text
       let text = "";
 
       text += `## Vibe Score\n\n`;
       text += `**Score:** ${vibeScore} (${vibeLabel})\n\n`;
 
+      // Add executive summary at the top if available
+      if (executiveSummary) {
+        text += `## Executive Summary\n\n`;
+        text += `> ${executiveSummary}\n\n`;
+      }
+
+      // Group and display static findings (with confidence if validation succeeded)
+      text += "## Static Analysis Findings\n\n";
       if (totalFindings) {
-        text += "## Static analysis findings\n\n";
-        const maxStaticToShow = 10;
-        staticFindings.slice(0, maxStaticToShow).forEach((f) => {
-          text += `- [${f.severity.toUpperCase()}] ${f.file}${f.line ? `:${f.line}` : ""} (${f.kind}): ${f.message}\n`;
-        });
-        if (totalFindings > maxStaticToShow) {
-          text += `\n_+ ${totalFindings - maxStaticToShow} more static finding(s) not shown._\n`;
+        if (validatedFindings) {
+          // Use validated findings with confidence scores
+          const groupedValidated = groupValidatedFindingsByKind(
+            validatedFindings,
+            vibescanConfig.llm.confidence_threshold
+          );
+          text += buildValidatedFindingsDisplay(groupedValidated, validationFilteredCount);
+        } else {
+          // Fall back to original grouping without confidence
+          const groupedFindings = groupStaticFindingsByKind(staticFindings);
+          text += buildGroupedFindingsDisplay(groupedFindings);
         }
       } else {
-        text += "## Static analysis findings\n\n";
         text += "_No static issues detected in this diff._\n";
       }
 
@@ -943,6 +1436,26 @@ export function registerEventHandlers(): void {
         }
       } else {
         console.log("[GitHub App] No high-risk findings; not posting PR comment.");
+      }
+
+      // Create GitHub issues for high-severity findings (if enabled)
+      if (vibescanConfig.reporting.create_issues && staticFindings.length > 0) {
+        try {
+          const issuesCreated = await createIssuesForFindings({
+            octokit,
+            owner,
+            repo,
+            prNumber: pullNumber,
+            prTitle: payload.pull_request.title,
+            findings: staticFindings,
+            config: vibescanConfig.reporting,
+          });
+          if (issuesCreated > 0) {
+            console.log(`[GitHub App] Created ${issuesCreated} issue(s) for high-severity findings`);
+          }
+        } catch (err) {
+          console.error("[GitHub App] Error creating issues:", err instanceof Error ? err.message : "unknown");
+        }
       }
     } catch (error) {
       console.error("[GitHub App] Failed to create Vibe Scan check run:", error instanceof Error ? error.message : "unknown error");
@@ -1143,9 +1656,54 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
 
     console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
 
-    // Compute Vibe Score
+    // Convert findings to StaticFindingSummary for LLM validation
+    const staticFindingSummaries: StaticFindingSummary[] = baselineResult.findings.map((f) => ({
+      ruleId: f.kind,
+      kind: f.kind,
+      file: f.file,
+      line: f.line ?? 0,
+      severity: f.severity === "high" ? "high" : f.severity === "medium" ? "medium" : "low",
+      summary: f.message,
+    }));
+
+    // Validate findings with LLM for confidence scoring (if enabled)
+    let validatedFindings: ValidatedFinding[] | null = null;
+    let validationFilteredCount = 0;
+    if (baselineResult.findings.length > 0 && vibescanConfig.llm.validate_findings) {
+      try {
+        console.log("[Baseline] Validating findings with LLM...");
+        const validationResult = await validateFindingsWithLlm({
+          findings: staticFindingSummaries,
+          codeContext: fileContents,
+          installationId,
+          confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+        });
+        if (validationResult) {
+          validatedFindings = validationResult.validatedFindings;
+          validationFilteredCount = validationResult.filteredCount;
+          console.log(
+            `[Baseline] Validation complete: ${validatedFindings.length} findings, ` +
+            `${validationFilteredCount} filtered as likely false positives, ` +
+            `${validationResult.tokensUsed} tokens used`
+          );
+        }
+      } catch (err) {
+        console.warn("[Baseline] Finding validation failed:", err instanceof Error ? err.message : "unknown");
+      }
+    }
+
+    // Compute Vibe Score (use validated findings if available to filter false positives from score)
+    const findingsForScore = validatedFindings
+      ? baselineResult.findings.filter((f, i) => {
+          const validated = validatedFindings!.find(
+            (v) => v.file === f.file && v.line === (f.line ?? 0) && v.ruleId === f.kind
+          );
+          return !validated?.likelyFalsePositive;
+        })
+      : baselineResult.findings;
+
     const vibeScoreResult = computeVibeScore({
-      staticFindings: baselineResult.findings,
+      staticFindings: findingsForScore,
       llmIssues: [],
       options: { scoringConfig: vibescanConfig.scoring },
     });
@@ -1155,6 +1713,8 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
       vibeScore: vibeScoreResult.score,
       vibeLabel: vibeScoreResult.label,
       findings: baselineResult.findings,
+      validatedFindings,
+      filteredCount: validationFilteredCount,
       filesAnalyzed: baselineResult.filesAnalyzed,
       filesSkipped: baselineResult.filesSkipped,
       truncated: baselineResult.truncated,
@@ -1183,12 +1743,14 @@ function buildBaselineIssueBody(params: {
   vibeScore: number;
   vibeLabel: string;
   findings: Finding[];
+  validatedFindings?: ValidatedFinding[] | null;
+  filteredCount?: number;
   filesAnalyzed: number;
   filesSkipped: number;
   truncated: boolean;
   totalCodeFiles: number;
 }): string {
-  const { vibeScore, vibeLabel, findings, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
+  const { vibeScore, vibeLabel, findings, validatedFindings, filteredCount = 0, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
 
   let body = `# Vibe Scan Baseline Report\n\n`;
   body += `Welcome to Vibe Scan! This is your baseline production readiness assessment.\n\n`;
@@ -1217,10 +1779,83 @@ function buildBaselineIssueBody(params: {
   if (truncated) {
     body += `- *Analysis was truncated at ${filesAnalyzed} files*\n`;
   }
-  body += `- **Issues Found:** ${findings.length}\n\n`;
+  body += `- **Issues Found:** ${findings.length}`;
+  if (filteredCount > 0) {
+    body += ` (${filteredCount} filtered as likely false positives)`;
+  }
+  body += `\n\n`;
 
-  // Findings summary
-  if (findings.length > 0) {
+  // Findings summary - use validated findings if available
+  if (validatedFindings && validatedFindings.length > 0) {
+    // Filter to only show true positives (not filtered)
+    const truePositives = validatedFindings.filter((f) => !f.likelyFalsePositive);
+    const high = truePositives.filter((f) => f.severity === "high");
+    const medium = truePositives.filter((f) => f.severity === "medium");
+    const low = truePositives.filter((f) => f.severity === "low");
+
+    body += `## Findings Summary\n\n`;
+    body += `| Severity | Count |\n|----------|-------|\n`;
+    body += `| High | ${high.length} |\n`;
+    body += `| Medium | ${medium.length} |\n`;
+    body += `| Low | ${low.length} |\n\n`;
+
+    if (filteredCount > 0) {
+      body += `_${filteredCount} finding(s) were filtered as likely false positives by LLM validation._\n\n`;
+    }
+
+    // High severity details with confidence
+    if (high.length > 0) {
+      body += `### High Severity Issues\n\n`;
+
+      const byKind = new Map<string, ValidatedFinding[]>();
+      for (const f of high) {
+        if (!byKind.has(f.ruleId)) byKind.set(f.ruleId, []);
+        byKind.get(f.ruleId)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        const avgConfidence = kindFindings.reduce((sum, f) => sum + f.confidence, 0) / kindFindings.length;
+        const badge = getConfidenceBadge(avgConfidence);
+        body += `${badge} **${kind}** (${kindFindings.length}) - _${getConfidenceLabel(avgConfidence)} confidence_\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+
+    // Medium severity details with confidence
+    if (medium.length > 0) {
+      body += `### Medium Severity Issues\n\n`;
+
+      const byKind = new Map<string, ValidatedFinding[]>();
+      for (const f of medium) {
+        if (!byKind.has(f.ruleId)) byKind.set(f.ruleId, []);
+        byKind.get(f.ruleId)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        const avgConfidence = kindFindings.reduce((sum, f) => sum + f.confidence, 0) / kindFindings.length;
+        const badge = getConfidenceBadge(avgConfidence);
+        body += `${badge} **${kind}** (${kindFindings.length}) - _${getConfidenceLabel(avgConfidence)} confidence_\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+
+    body += `**Confidence Legend:** 🔴 very high • 🟠 high • 🟡 medium\n\n`;
+  } else if (findings.length > 0) {
+    // Fallback to original display without validation
     const high = findings.filter((f) => f.severity === "high");
     const medium = findings.filter((f) => f.severity === "medium");
     const low = findings.filter((f) => f.severity === "low");
@@ -1266,4 +1901,263 @@ function buildBaselineIssueBody(params: {
   body += `---\n_Baseline scan from Vibe Scan installation._\n`;
 
   return body;
+}
+
+// ============================================================================
+// API Handler for GitHub Actions Integration
+// ============================================================================
+
+/**
+ * Result returned by the API analyze endpoint.
+ */
+export interface ApiAnalysisResult {
+  success: boolean;
+  vibeScore: number;
+  vibeLabel: string;
+  findings: {
+    total: number;
+    high: number;
+    medium: number;
+    low: number;
+    filtered: number;
+  };
+  details: Array<{
+    ruleId: string;
+    file: string;
+    line: number | null;
+    severity: string;
+    message: string;
+    confidence?: number;
+    likelyFalsePositive?: boolean;
+  }>;
+  executiveSummary?: string;
+  error?: string;
+}
+
+/**
+ * Create an App-authenticated Octokit for finding installations.
+ */
+function createAppOctokit(): Octokit {
+  if (!config.GITHUB_APP_ID || !config.GITHUB_PRIVATE_KEY) {
+    throw new Error("GITHUB_APP_ID or GITHUB_PRIVATE_KEY not set in config");
+  }
+
+  return new Octokit({
+    authStrategy: createAppAuth,
+    auth: {
+      appId: Number(config.GITHUB_APP_ID),
+      privateKey: config.GITHUB_PRIVATE_KEY,
+    },
+  });
+}
+
+/**
+ * Find the installation ID for a repository.
+ */
+async function findInstallationForRepo(owner: string, repo: string): Promise<number | null> {
+  try {
+    const appOctokit = createAppOctokit();
+    const response = await appOctokit.request("GET /repos/{owner}/{repo}/installation", {
+      owner,
+      repo,
+    });
+    return response.data.id;
+  } catch (error) {
+    const err = error as { status?: number };
+    if (err.status === 404) {
+      return null; // App not installed on this repo
+    }
+    throw error;
+  }
+}
+
+/**
+ * Analyze a pull request via API (for GitHub Actions integration).
+ *
+ * This is called by the lightweight GitHub Action to run analysis
+ * using the server's API keys (SaaS model).
+ */
+export async function analyzeForApi(
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<ApiAnalysisResult> {
+  console.log(`[API] Analyzing PR #${pullNumber} for ${owner}/${repo}`);
+
+  // Find installation
+  const installationId = await findInstallationForRepo(owner, repo);
+  if (!installationId) {
+    return {
+      success: false,
+      vibeScore: 0,
+      vibeLabel: "error",
+      findings: { total: 0, high: 0, medium: 0, low: 0, filtered: 0 },
+      details: [],
+      error: "Vibe Scan is not installed on this repository. Please install the GitHub App first.",
+    };
+  }
+
+  const octokit = createInstallationOctokit(installationId);
+
+  // Get PR details
+  let pr;
+  try {
+    const prResponse = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+    pr = prResponse.data;
+  } catch (error) {
+    return {
+      success: false,
+      vibeScore: 0,
+      vibeLabel: "error",
+      findings: { total: 0, high: 0, medium: 0, low: 0, filtered: 0 },
+      details: [],
+      error: `Failed to fetch PR #${pullNumber}: ${error instanceof Error ? error.message : "unknown"}`,
+    };
+  }
+
+  // Fetch config
+  const vibescanConfig = await fetchRepoConfig(
+    octokit,
+    owner,
+    repo,
+    pr.head.ref,
+    pr.base.ref
+  );
+
+  // Get PR files
+  const filesResponse = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/files", {
+    owner,
+    repo,
+    pull_number: pullNumber,
+    per_page: 100,
+  });
+
+  const prFiles = filesResponse.data.map((f) => ({
+    filename: f.filename,
+    patch: f.patch,
+  }));
+
+  console.log(`[API] Found ${prFiles.length} changed files`);
+
+  // Fetch file contents for context
+  const fileContents = new Map<string, string>();
+  const filesToFetch = prFiles
+    .map((f) => f.filename)
+    .filter((f) => CODE_EXTENSIONS.some((ext) => f.endsWith(ext)))
+    .slice(0, 20);
+
+  for (const filePath of filesToFetch) {
+    const content = await fetchFileContent(octokit, owner, repo, filePath, pr.head.sha);
+    if (content) {
+      fileContents.set(filePath, content);
+    }
+  }
+
+  // Run static analysis
+  const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, {
+    config: vibescanConfig,
+    fileContents,
+  });
+
+  console.log(`[API] Static analysis found ${staticFindings.length} findings`);
+
+  // Convert to summary format
+  const staticFindingSummaries: StaticFindingSummary[] = staticFindings.map((f) => ({
+    ruleId: f.kind,
+    kind: f.kind,
+    file: f.file,
+    line: f.line ?? 0,
+    severity: f.severity === "high" ? "high" : f.severity === "medium" ? "medium" : "low",
+    summary: f.message,
+  }));
+
+  // Validate findings with LLM
+  let validatedFindings: ValidatedFinding[] | null = null;
+  let filteredCount = 0;
+
+  if (staticFindings.length > 0 && vibescanConfig.llm.validate_findings) {
+    console.log("[API] Validating findings with LLM...");
+    const validationResult = await validateFindingsWithLlm({
+      findings: staticFindingSummaries,
+      codeContext: fileContents,
+      installationId,
+      confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+    });
+
+    if (validationResult) {
+      validatedFindings = validationResult.validatedFindings;
+      filteredCount = validationResult.filteredCount;
+      console.log(`[API] Validated: ${filteredCount} filtered as false positives`);
+    }
+  }
+
+  // Compute score (excluding filtered findings)
+  const findingsForScore = validatedFindings
+    ? staticFindings.filter((f) => {
+        const validated = validatedFindings!.find(
+          (v) => v.file === f.file && v.line === (f.line ?? 0) && v.ruleId === f.kind
+        );
+        return !validated?.likelyFalsePositive;
+      })
+    : staticFindings;
+
+  const vibeScoreResult = computeVibeScore({
+    staticFindings: findingsForScore,
+    llmIssues: [],
+    options: { scoringConfig: vibescanConfig.scoring },
+  });
+
+  // Count by severity
+  const high = findingsForScore.filter((f) => f.severity === "high").length;
+  const medium = findingsForScore.filter((f) => f.severity === "medium").length;
+  const low = findingsForScore.filter((f) => f.severity === "low").length;
+
+  // Generate executive summary
+  let executiveSummary: string | undefined;
+  if (findingsForScore.length > 0 && vibescanConfig.llm.enabled) {
+    try {
+      const summaryInput = prepareExecutiveSummaryInput(findingsForScore, vibeScoreResult.score, installationId);
+      executiveSummary = await generateExecutiveSummary(summaryInput) ?? undefined;
+    } catch {
+      // Executive summary is optional
+    }
+  }
+
+  // Build details array
+  const details = validatedFindings
+    ? validatedFindings.map((v) => ({
+        ruleId: v.ruleId,
+        file: v.file,
+        line: v.line || null,
+        severity: v.severity,
+        message: v.summary,
+        confidence: v.confidence,
+        likelyFalsePositive: v.likelyFalsePositive,
+      }))
+    : staticFindings.map((f) => ({
+        ruleId: f.kind,
+        file: f.file,
+        line: f.line || null,
+        severity: f.severity,
+        message: f.message,
+      }));
+
+  return {
+    success: true,
+    vibeScore: vibeScoreResult.score,
+    vibeLabel: vibeScoreResult.label,
+    findings: {
+      total: findingsForScore.length,
+      high,
+      medium,
+      low,
+      filtered: filteredCount,
+    },
+    details,
+    executiveSummary,
+  };
 }
