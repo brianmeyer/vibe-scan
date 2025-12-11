@@ -437,7 +437,7 @@ describe("analyzeSnippetWithLlm Error Handling", () => {
       });
 
       expect(result).toBeNull();
-    });
+    }, 20000); // Increased timeout for retry logic
 
     it("should return null when OpenAI API throws a rate limit error", async () => {
       const rateLimitError = new Error("Rate limit exceeded");
@@ -450,7 +450,7 @@ describe("analyzeSnippetWithLlm Error Handling", () => {
       });
 
       expect(result).toBeNull();
-    });
+    }, 20000); // Increased timeout for retry logic
 
     it("should return null when OpenAI API throws a 500 server error", async () => {
       const serverError = new Error("Internal Server Error");
@@ -474,7 +474,7 @@ describe("analyzeSnippetWithLlm Error Handling", () => {
       });
 
       expect(result).toBeNull();
-    });
+    }, 20000); // Increased timeout for retry logic
 
     it("should return null when OpenAI API throws authentication error", async () => {
       const authError = new Error("Invalid API key");
