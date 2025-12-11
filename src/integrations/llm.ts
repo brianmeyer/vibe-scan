@@ -361,6 +361,66 @@ export async function getTokenUsage(installationId: number): Promise<number> {
 }
 
 // ============================================================================
+// JSON Repair Utilities
+// ============================================================================
+
+/**
+ * Attempt to repair a truncated JSON response from the LLM.
+ * This handles cases where the response was cut off mid-JSON due to token limits.
+ *
+ * Strategy:
+ * 1. Find the last complete array element (ending with })
+ * 2. Close any open arrays and objects
+ *
+ * @param content - The potentially truncated JSON string
+ * @returns Repaired JSON string or null if repair is not possible
+ */
+function attemptJsonRepair(content: string): string | null {
+  // Only attempt repair if it looks like a truncated JSON object with issues array
+  if (!content.includes('"issues"') || !content.includes('[')) {
+    return null;
+  }
+
+  // Find the start of the JSON object
+  const jsonStart = content.indexOf('{');
+  if (jsonStart === -1) {
+    return null;
+  }
+
+  let jsonStr = content.slice(jsonStart);
+
+  // Try to find the last complete issue object by finding the last complete "}"
+  // that appears to end an issue object (followed by comma or appears after "severity")
+  const issuesMatch = jsonStr.match(/"issues"\s*:\s*\[/);
+  if (!issuesMatch) {
+    return null;
+  }
+
+  // Find all complete issue objects (those that have a closing brace after severity)
+  // Look for pattern: "severity": "..." } which ends an issue
+  const severityPattern = /"severity"\s*:\s*"(?:low|medium|high)"\s*\}/g;
+  let lastCompleteIssue = -1;
+  let match;
+
+  while ((match = severityPattern.exec(jsonStr)) !== null) {
+    lastCompleteIssue = match.index + match[0].length;
+  }
+
+  if (lastCompleteIssue === -1) {
+    // No complete issues found, return minimal valid structure
+    return '{"issues": [], "architectureSummary": null}';
+  }
+
+  // Truncate at the last complete issue and close the structure
+  jsonStr = jsonStr.slice(0, lastCompleteIssue);
+
+  // Close the issues array and the outer object
+  jsonStr += ']}';
+
+  return jsonStr;
+}
+
+// ============================================================================
 // Main Analysis Function
 // ============================================================================
 
@@ -421,7 +481,7 @@ export async function analyzeSnippetWithLlm(params: {
       model,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.1,
-      max_tokens: 1024,
+      max_tokens: 4096,
     });
 
     // Record token usage if installationId is provided
@@ -448,14 +508,33 @@ export async function analyzeSnippetWithLlm(params: {
       const jsonStr = jsonMatch ? jsonMatch[0] : content;
       parsed = JSON.parse(jsonStr);
     } catch (parseError) {
-      console.error("[LLM] Failed to parse JSON response:", parseError instanceof Error ? parseError.message : "unknown");
-      // Truncate response to avoid logging potentially echoed secrets
-      const truncated = content.length > 200 ? content.slice(0, 200) + "...[truncated]" : content;
-      console.error("[LLM] Raw response (truncated):", truncated);
-      return {
-        issues: [],
-        architectureSummary: undefined,
-      };
+      // Attempt to repair truncated JSON response
+      const repaired = attemptJsonRepair(content);
+      if (repaired) {
+        try {
+          parsed = JSON.parse(repaired);
+          console.warn("[LLM] Successfully repaired truncated JSON response");
+        } catch {
+          // Repair failed, log and return empty
+          console.error("[LLM] Failed to parse JSON response:", parseError instanceof Error ? parseError.message : "unknown");
+          // Truncate response to avoid logging potentially echoed secrets
+          const truncated = content.length > 200 ? content.slice(0, 200) + "...[truncated]" : content;
+          console.error("[LLM] Raw response (truncated):", truncated);
+          return {
+            issues: [],
+            architectureSummary: undefined,
+          };
+        }
+      } else {
+        console.error("[LLM] Failed to parse JSON response:", parseError instanceof Error ? parseError.message : "unknown");
+        // Truncate response to avoid logging potentially echoed secrets
+        const truncated = content.length > 200 ? content.slice(0, 200) + "...[truncated]" : content;
+        console.error("[LLM] Raw response (truncated):", truncated);
+        return {
+          issues: [],
+          architectureSummary: undefined,
+        };
+      }
     }
 
     // Validate and normalize the response
