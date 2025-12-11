@@ -21,6 +21,7 @@ import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../conf
 import { extractFileStructure } from "../analysis/structure";
 import { SECRET_PATTERNS, CODE_EXTENSIONS } from "../analysis/patterns";
 import { canAnalyzeWithAST } from "../analysis/ast";
+import { handleMarketplacePurchase, MarketplacePurchasePayload, getInstallationLimits } from "../plans";
 
 export const webhooks = new Webhooks({
   secret: config.GITHUB_WEBHOOK_SECRET || "development-secret",
@@ -741,7 +742,10 @@ export function registerEventHandlers(): void {
       const mediumCount = staticFindings.filter((f) => f.severity === "medium").length;
       const lowCount = staticFindings.filter((f) => f.severity === "low").length;
 
-      // Run LLM analysis on candidate files
+      // Check plan limits for this installation
+      const planLimits = await getInstallationLimits(installationId);
+
+      // Run LLM analysis on candidate files (if enabled for this plan)
       const llmResults: LlmAnalysisResult[] = [];
       const llmIssues: LlmIssue[] = [];
 
@@ -756,14 +760,18 @@ export function registerEventHandlers(): void {
       }));
 
       try {
-        const candidates = selectLlmCandidates(prFiles, staticFindings);
-        if (!candidates.length) {
-          console.log("[LLM] No LLM candidates selected for this PR");
+        // Skip LLM analysis if not enabled for this plan
+        if (!planLimits.llmEnabled) {
+          console.log(`[LLM] LLM analysis not enabled for this plan, skipping`);
         } else {
-          console.log(`[LLM] Selected ${candidates.length} candidate patch(es) for analysis`);
-        }
+          const candidates = selectLlmCandidates(prFiles, staticFindings);
+          if (!candidates.length) {
+            console.log("[LLM] No LLM candidates selected for this PR");
+          } else {
+            console.log(`[LLM] Selected ${candidates.length} candidate patch(es) for analysis`);
+          }
 
-        for (const candidate of candidates) {
+          for (const candidate of candidates) {
           // Filter static findings to those relevant to this candidate file
           const fileFindings = staticFindingSummaries.filter((f) => f.file === candidate.file);
 
@@ -806,7 +814,8 @@ export function registerEventHandlers(): void {
               ...issue,
             });
           }
-        }
+          }
+        } // end else (llmEnabled)
       } catch (err) {
         console.error("[LLM] Unexpected error during LLM analysis:", err instanceof Error ? err.message : "unknown error");
       }
@@ -1009,6 +1018,18 @@ export function registerEventHandlers(): void {
       } catch (error) {
         console.error(`[GitHub App] Baseline scan failed for ${repo.full_name}:`, error instanceof Error ? error.message : "unknown error");
       }
+    }
+  });
+
+  // Handle GitHub Marketplace purchase events for billing tiers
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  webhooks.on("marketplace_purchase" as any, async ({ id, name, payload }: { id: string; name: string; payload: MarketplacePurchasePayload }) => {
+    console.log(`[GitHub App] Received marketplace_purchase event (id: ${id}): ${payload.action}`);
+
+    try {
+      await handleMarketplacePurchase(payload);
+    } catch (error) {
+      console.error("[GitHub App] Error handling marketplace purchase:", error instanceof Error ? error.message : "unknown error");
     }
   });
 
