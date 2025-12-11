@@ -1635,9 +1635,54 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
 
     console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
 
-    // Compute Vibe Score
+    // Convert findings to StaticFindingSummary for LLM validation
+    const staticFindingSummaries: StaticFindingSummary[] = baselineResult.findings.map((f) => ({
+      ruleId: f.kind,
+      kind: f.kind,
+      file: f.file,
+      line: f.line ?? 0,
+      severity: f.severity === "high" ? "high" : f.severity === "medium" ? "medium" : "low",
+      summary: f.message,
+    }));
+
+    // Validate findings with LLM for confidence scoring (if enabled)
+    let validatedFindings: ValidatedFinding[] | null = null;
+    let validationFilteredCount = 0;
+    if (baselineResult.findings.length > 0 && vibescanConfig.llm.validate_findings) {
+      try {
+        console.log("[Baseline] Validating findings with LLM...");
+        const validationResult = await validateFindingsWithLlm({
+          findings: staticFindingSummaries,
+          codeContext: fileContents,
+          installationId,
+          confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+        });
+        if (validationResult) {
+          validatedFindings = validationResult.validatedFindings;
+          validationFilteredCount = validationResult.filteredCount;
+          console.log(
+            `[Baseline] Validation complete: ${validatedFindings.length} findings, ` +
+            `${validationFilteredCount} filtered as likely false positives, ` +
+            `${validationResult.tokensUsed} tokens used`
+          );
+        }
+      } catch (err) {
+        console.warn("[Baseline] Finding validation failed:", err instanceof Error ? err.message : "unknown");
+      }
+    }
+
+    // Compute Vibe Score (use validated findings if available to filter false positives from score)
+    const findingsForScore = validatedFindings
+      ? baselineResult.findings.filter((f, i) => {
+          const validated = validatedFindings!.find(
+            (v) => v.file === f.file && v.line === (f.line ?? 0) && v.ruleId === f.kind
+          );
+          return !validated?.likelyFalsePositive;
+        })
+      : baselineResult.findings;
+
     const vibeScoreResult = computeVibeScore({
-      staticFindings: baselineResult.findings,
+      staticFindings: findingsForScore,
       llmIssues: [],
       options: { scoringConfig: vibescanConfig.scoring },
     });
@@ -1647,6 +1692,8 @@ async function performBaselineScan(params: BaselineScanParams): Promise<void> {
       vibeScore: vibeScoreResult.score,
       vibeLabel: vibeScoreResult.label,
       findings: baselineResult.findings,
+      validatedFindings,
+      filteredCount: validationFilteredCount,
       filesAnalyzed: baselineResult.filesAnalyzed,
       filesSkipped: baselineResult.filesSkipped,
       truncated: baselineResult.truncated,
@@ -1675,12 +1722,14 @@ function buildBaselineIssueBody(params: {
   vibeScore: number;
   vibeLabel: string;
   findings: Finding[];
+  validatedFindings?: ValidatedFinding[] | null;
+  filteredCount?: number;
   filesAnalyzed: number;
   filesSkipped: number;
   truncated: boolean;
   totalCodeFiles: number;
 }): string {
-  const { vibeScore, vibeLabel, findings, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
+  const { vibeScore, vibeLabel, findings, validatedFindings, filteredCount = 0, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
 
   let body = `# Vibe Scan Baseline Report\n\n`;
   body += `Welcome to Vibe Scan! This is your baseline production readiness assessment.\n\n`;
@@ -1709,10 +1758,83 @@ function buildBaselineIssueBody(params: {
   if (truncated) {
     body += `- *Analysis was truncated at ${filesAnalyzed} files*\n`;
   }
-  body += `- **Issues Found:** ${findings.length}\n\n`;
+  body += `- **Issues Found:** ${findings.length}`;
+  if (filteredCount > 0) {
+    body += ` (${filteredCount} filtered as likely false positives)`;
+  }
+  body += `\n\n`;
 
-  // Findings summary
-  if (findings.length > 0) {
+  // Findings summary - use validated findings if available
+  if (validatedFindings && validatedFindings.length > 0) {
+    // Filter to only show true positives (not filtered)
+    const truePositives = validatedFindings.filter((f) => !f.likelyFalsePositive);
+    const high = truePositives.filter((f) => f.severity === "high");
+    const medium = truePositives.filter((f) => f.severity === "medium");
+    const low = truePositives.filter((f) => f.severity === "low");
+
+    body += `## Findings Summary\n\n`;
+    body += `| Severity | Count |\n|----------|-------|\n`;
+    body += `| High | ${high.length} |\n`;
+    body += `| Medium | ${medium.length} |\n`;
+    body += `| Low | ${low.length} |\n\n`;
+
+    if (filteredCount > 0) {
+      body += `_${filteredCount} finding(s) were filtered as likely false positives by LLM validation._\n\n`;
+    }
+
+    // High severity details with confidence
+    if (high.length > 0) {
+      body += `### High Severity Issues\n\n`;
+
+      const byKind = new Map<string, ValidatedFinding[]>();
+      for (const f of high) {
+        if (!byKind.has(f.ruleId)) byKind.set(f.ruleId, []);
+        byKind.get(f.ruleId)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        const avgConfidence = kindFindings.reduce((sum, f) => sum + f.confidence, 0) / kindFindings.length;
+        const badge = getConfidenceBadge(avgConfidence);
+        body += `${badge} **${kind}** (${kindFindings.length}) - _${getConfidenceLabel(avgConfidence)} confidence_\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+
+    // Medium severity details with confidence
+    if (medium.length > 0) {
+      body += `### Medium Severity Issues\n\n`;
+
+      const byKind = new Map<string, ValidatedFinding[]>();
+      for (const f of medium) {
+        if (!byKind.has(f.ruleId)) byKind.set(f.ruleId, []);
+        byKind.get(f.ruleId)!.push(f);
+      }
+
+      for (const [kind, kindFindings] of byKind) {
+        const avgConfidence = kindFindings.reduce((sum, f) => sum + f.confidence, 0) / kindFindings.length;
+        const badge = getConfidenceBadge(avgConfidence);
+        body += `${badge} **${kind}** (${kindFindings.length}) - _${getConfidenceLabel(avgConfidence)} confidence_\n`;
+        const examples = kindFindings.slice(0, 3);
+        for (const f of examples) {
+          body += `- \`${f.file}${f.line ? `:${f.line}` : ""}\`\n`;
+        }
+        if (kindFindings.length > 3) {
+          body += `- _...and ${kindFindings.length - 3} more_\n`;
+        }
+        body += `\n`;
+      }
+    }
+
+    body += `**Confidence Legend:** 🔴 very high • 🟠 high • 🟡 medium\n\n`;
+  } else if (findings.length > 0) {
+    // Fallback to original display without validation
     const high = findings.filter((f) => f.severity === "high");
     const medium = findings.filter((f) => f.severity === "medium");
     const low = findings.filter((f) => f.severity === "low");
