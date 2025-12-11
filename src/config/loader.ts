@@ -20,9 +20,11 @@ import {
   VibeScanConfig,
   RequiredScoringConfig,
   RequiredLlmConfig,
+  RequiredReportingConfig,
   DEFAULT_SCORING_CONFIG,
   DEFAULT_LLM_CONFIG,
   DEFAULT_FILES_CONFIG,
+  DEFAULT_REPORTING_CONFIG,
 } from "./schema";
 
 /**
@@ -63,6 +65,11 @@ export interface LoadedConfig {
    * Resolved LLM configuration with all defaults applied.
    */
   llm: RequiredLlmConfig;
+
+  /**
+   * Resolved reporting configuration with all defaults applied.
+   */
+  reporting: RequiredReportingConfig;
 }
 
 /**
@@ -74,6 +81,7 @@ const DEFAULT_CONFIG: VibeScanConfig = {
   files: DEFAULT_FILES_CONFIG,
   scoring: DEFAULT_SCORING_CONFIG,
   llm: DEFAULT_LLM_CONFIG,
+  reporting: DEFAULT_REPORTING_CONFIG,
   overrides: [],
 };
 
@@ -148,6 +156,13 @@ export function loadConfig(repoRoot: string): LoadedConfig {
     max_files: rawConfig.llm?.max_files ?? DEFAULT_LLM_CONFIG.max_files,
   };
 
+  const reporting: RequiredReportingConfig = {
+    create_issues: rawConfig.reporting?.create_issues ?? DEFAULT_REPORTING_CONFIG.create_issues,
+    max_issues_per_pr: rawConfig.reporting?.max_issues_per_pr ?? DEFAULT_REPORTING_CONFIG.max_issues_per_pr,
+    issue_severity_threshold: rawConfig.reporting?.issue_severity_threshold ?? DEFAULT_REPORTING_CONFIG.issue_severity_threshold,
+    issue_labels: rawConfig.reporting?.issue_labels ?? DEFAULT_REPORTING_CONFIG.issue_labels,
+  };
+
   // Build ignore and prototype zone patterns
   const ignorePatterns = rawConfig.files?.ignore ?? [];
   const prototypeZonePatterns = rawConfig.files?.prototype_zone ?? [];
@@ -212,6 +227,7 @@ export function loadConfig(repoRoot: string): LoadedConfig {
     getRuleConfig,
     scoring,
     llm,
+    reporting,
   };
 }
 
@@ -298,6 +314,13 @@ function buildLoadedConfig(rawConfig: VibeScanConfig): LoadedConfig {
     max_files: rawConfig.llm?.max_files ?? DEFAULT_LLM_CONFIG.max_files,
   };
 
+  const reporting: RequiredReportingConfig = {
+    create_issues: rawConfig.reporting?.create_issues ?? DEFAULT_REPORTING_CONFIG.create_issues,
+    max_issues_per_pr: rawConfig.reporting?.max_issues_per_pr ?? DEFAULT_REPORTING_CONFIG.max_issues_per_pr,
+    issue_severity_threshold: rawConfig.reporting?.issue_severity_threshold ?? DEFAULT_REPORTING_CONFIG.issue_severity_threshold,
+    issue_labels: rawConfig.reporting?.issue_labels ?? DEFAULT_REPORTING_CONFIG.issue_labels,
+  };
+
   // Build ignore and prototype zone patterns
   const ignorePatterns = rawConfig.files?.ignore ?? [];
   const prototypeZonePatterns = rawConfig.files?.prototype_zone ?? [];
@@ -362,6 +385,7 @@ function buildLoadedConfig(rawConfig: VibeScanConfig): LoadedConfig {
     getRuleConfig,
     scoring,
     llm,
+    reporting,
   };
 }
 
@@ -374,6 +398,7 @@ export function createDefaultConfig(): LoadedConfig {
 
   const scoring: RequiredScoringConfig = { ...DEFAULT_SCORING_CONFIG };
   const llm: RequiredLlmConfig = { ...DEFAULT_LLM_CONFIG };
+  const reporting: RequiredReportingConfig = { ...DEFAULT_REPORTING_CONFIG };
 
   function isFileIgnored(_filePath: string): boolean {
     return false;
@@ -394,5 +419,6 @@ export function createDefaultConfig(): LoadedConfig {
     getRuleConfig,
     scoring,
     llm,
+    reporting,
   };
 }
