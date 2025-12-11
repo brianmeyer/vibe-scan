@@ -35,13 +35,18 @@ export interface PlanLimits {
 
 /**
  * Plan configuration for each tier.
+ *
+ * ALPHA MODE: Free tier currently has full access for testing.
+ * TODO: Restore limits when ready to monetize:
+ *   free: { monthlyTokens: 10_000, llmEnabled: false, maxFilesPerPr: 10, baselineEnabled: false }
  */
 export const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
+  // ALPHA: Free tier gets full access for testing
   free: {
-    monthlyTokens: 10_000,
-    llmEnabled: false,
-    maxFilesPerPr: 10,
-    baselineEnabled: false,
+    monthlyTokens: 100_000,
+    llmEnabled: true,
+    maxFilesPerPr: 50,
+    baselineEnabled: true,
   },
   pro: {
     monthlyTokens: 100_000,
