@@ -1357,9 +1357,55 @@ export function registerEventHandlers(): void {
 
       text += "\n\n## AI (LLM) analysis findings\n\n";
 
-      if (llmIssueCount) {
+      // Filter LLM issues to exclude those that overlap with filtered static findings
+      // This prevents showing "Hardcoded secrets" in LLM section when HARDCODED_SECRET was filtered
+      const filteredLlmIssues = validatedFindings
+        ? llmIssues.filter((issue) => {
+            // If the LLM issue references a specific file, check if that file
+            // has filtered findings that likely overlap with this issue type
+            if (!issue.file) return true; // Keep cross-cutting issues without file reference
+
+            // Build a set of files with filtered findings
+            const filteredFiles = new Set(
+              validatedFindings
+                .filter((v) => v.likelyFalsePositive)
+                .map((v) => v.file)
+            );
+
+            // If this file has filtered findings, check for overlap
+            if (filteredFiles.has(issue.file)) {
+              // Map LLM issue kinds to related static rule IDs
+              const llmToStaticRuleMap: Record<string, string[]> = {
+                ENVIRONMENT_ASSUMPTION: ["HARDCODED_SECRET", "HARDCODED_URL", "PROTOTYPE_INFRA"],
+                DATA_CONTRACT_RISK: ["HARDCODED_SECRET", "UNVALIDATED_INPUT", "DATA_SHAPE_ASSUMPTION"],
+                RESILIENCE_GAP: ["SILENT_ERROR", "UNSAFE_IO"],
+                OBSERVABILITY_GAP: ["SILENT_ERROR"],
+                SCALING_RISK: ["UNBOUNDED_QUERY", "MEMORY_RISK", "LOOPED_IO"],
+                CONCURRENCY_RISK: ["SHARED_FILE_WRITE", "RETRY_STORM_RISK", "GLOBAL_MUTATION"],
+              };
+
+              const relatedStaticRules = llmToStaticRuleMap[issue.kind] || [];
+
+              // Check if any filtered finding in this file matches a related rule
+              const hasOverlappingFilteredFinding = validatedFindings.some(
+                (v) => v.likelyFalsePositive && v.file === issue.file && relatedStaticRules.includes(v.ruleId)
+              );
+
+              if (hasOverlappingFilteredFinding) {
+                console.log(`[PR Check] Filtering LLM issue "${issue.title}" - overlaps with filtered static finding in ${issue.file}`);
+                return false;
+              }
+            }
+
+            return true;
+          })
+        : llmIssues;
+
+      const filteredLlmIssueCount = filteredLlmIssues.length;
+
+      if (filteredLlmIssueCount) {
         // Group issues by kind for better organization
-        const groupedIssues = groupIssuesByKind(llmIssues);
+        const groupedIssues = groupIssuesByKind(filteredLlmIssues);
         let issuesShown = 0;
         const maxLlmToShow = 10;
 
@@ -1383,8 +1429,8 @@ export function registerEventHandlers(): void {
           text += "\n";
         }
 
-        if (llmIssueCount > maxLlmToShow) {
-          text += `_+ ${llmIssueCount - maxLlmToShow} more AI finding(s) not shown._\n`;
+        if (filteredLlmIssueCount > maxLlmToShow) {
+          text += `_+ ${filteredLlmIssueCount - maxLlmToShow} more AI finding(s) not shown._\n`;
         }
       } else {
         text += "_No additional AI-identified issues beyond static analysis._\n";
@@ -1399,7 +1445,7 @@ export function registerEventHandlers(): void {
             return !validated?.likelyFalsePositive;
           })
         : staticFindings;
-      const archSummary = computeArchitectureRiskSummary({ staticFindings: findingsForArchSummary, llmIssues });
+      const archSummary = computeArchitectureRiskSummary({ staticFindings: findingsForArchSummary, llmIssues: filteredLlmIssues });
       text += "\n\n" + buildArchitectureRiskSection(archSummary);
 
       // Create check run
@@ -1421,10 +1467,10 @@ export function registerEventHandlers(): void {
         `[GitHub App] Created Vibe Scan check run with ${staticFindings.length} static finding(s) and ${llmIssueCount} AI finding(s) on ${owner}/${repo}@${headSha}`
       );
 
-      // Post high-risk PR comment if there are high-severity findings
+      // Post high-risk PR comment if there are high-severity findings (use filtered findings)
       const commentBody = buildHighRiskCommentBody({
-        staticFindings,
-        llmIssues,
+        staticFindings: findingsForArchSummary,
+        llmIssues: filteredLlmIssues,
         vibeScore,
         vibeLabel,
         archSummary,
