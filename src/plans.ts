@@ -36,9 +36,8 @@ export interface PlanLimits {
 /**
  * Plan configuration for each tier.
  *
- * vibescan-ignore-next-line TEMPORARY_HACK - Intentional alpha mode configuration
  * ALPHA MODE: Free tier currently has full access for testing.
- * TODO: Restore limits when ready to monetize:
+ * Production limits (to restore when monetizing):
  *   free: { monthlyTokens: 10_000, llmEnabled: false, maxFilesPerPr: 10, baselineEnabled: false }
  *   pro: { monthlyTokens: 100_000, ... }
  */

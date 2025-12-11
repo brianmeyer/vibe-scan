@@ -402,7 +402,6 @@ function attemptJsonRepair(content: string): string | null {
   let lastCompleteIssue = -1;
   let match;
 
-  // vibescan-ignore-next-line UNSAFE_EVAL
   while ((match = severityPattern.exec(jsonStr)) !== null) {
     lastCompleteIssue = match.index + match[0].length;
   }

@@ -1390,8 +1390,16 @@ export function registerEventHandlers(): void {
         text += "_No additional AI-identified issues beyond static analysis._\n";
       }
 
-      // Add architecture risk summary
-      const archSummary = computeArchitectureRiskSummary({ staticFindings, llmIssues });
+      // Add architecture risk summary - use filtered findings if validation succeeded
+      const findingsForArchSummary = validatedFindings
+        ? staticFindings.filter((f) => {
+            const validated = validatedFindings.find(
+              (v) => v.file === f.file && v.line === (f.line ?? 0) && v.ruleId === f.kind
+            );
+            return !validated?.likelyFalsePositive;
+          })
+        : staticFindings;
+      const archSummary = computeArchitectureRiskSummary({ staticFindings: findingsForArchSummary, llmIssues });
       text += "\n\n" + buildArchitectureRiskSection(archSummary);
 
       // Create check run
