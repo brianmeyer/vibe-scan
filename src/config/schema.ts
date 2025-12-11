@@ -51,6 +51,20 @@ export interface VibeScanLlmConfig {
    * Default: 50
    */
   max_files?: number;
+
+  /**
+   * Whether to validate static findings with LLM for confidence scoring.
+   * When enabled, static findings are sent to LLM to filter false positives.
+   * Default: true
+   */
+  validate_findings?: boolean;
+
+  /**
+   * Minimum confidence score (0.0 - 1.0) to display a finding.
+   * Findings below this threshold are filtered out.
+   * Default: 0.6
+   */
+  confidence_threshold?: number;
 }
 
 /**
@@ -155,6 +169,8 @@ export interface RequiredLlmConfig {
   max_model_tokens: number;
   temperature: number;
   max_files: number;
+  validate_findings: boolean;
+  confidence_threshold: number;
 }
 
 export interface RequiredFilesConfig {
@@ -185,6 +201,8 @@ export const DEFAULT_LLM_CONFIG: RequiredLlmConfig = {
   max_model_tokens: 4096,
   temperature: 0.1,
   max_files: 50,
+  validate_findings: true,
+  confidence_threshold: 0.6,
 };
 
 /**
