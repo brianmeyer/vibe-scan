@@ -1541,6 +1541,7 @@ export function registerEventHandlers(): void {
 
     try {
       await handleMarketplacePurchase(payload);
+      // vibescan-ignore-next-line SILENT_ERROR - Webhook handlers should not propagate errors to prevent cascading failures
     } catch (error) {
       console.error("[GitHub App] Error handling marketplace purchase:", error instanceof Error ? error.message : "unknown error");
     }
