@@ -704,6 +704,7 @@ export async function generateExecutiveSummary(
 
     return content.trim();
   } catch (error) {
+    // vibescan-ignore-next-line SILENT_ERROR - Intentional: LLM failure shouldn't block analysis
     console.error("[LLM] Executive summary generation failed:", error instanceof Error ? error.message : "unknown");
     return null;
   }

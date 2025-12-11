@@ -654,11 +654,16 @@ function prepareExecutiveSummaryInput(
     }
   }
 
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const highCount = findings.filter(f => f.severity === "high").length;
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  const mediumCount = findings.filter(f => f.severity === "medium").length;
+
   return {
     findingsByKind,
     totalFindings: findings.length,
-    highCount: findings.filter(f => f.severity === "high").length,
-    mediumCount: findings.filter(f => f.severity === "medium").length,
+    highCount,
+    mediumCount,
     vibeScore,
     installationId,
   };
@@ -843,6 +848,7 @@ async function createIssuesForFindings(params: {
   // Filter findings by severity threshold
   const severityOrder = { high: 3, medium: 2, low: 1 };
   const thresholdValue = severityOrder[config.issue_severity_threshold];
+  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
   const eligibleFindings = findings.filter(
     (f) => severityOrder[f.severity] >= thresholdValue
   );
@@ -896,6 +902,7 @@ _This issue was automatically created by [Vibe Scan](https://github.com/apps/vib
       issuesCreated++;
       console.log(`[GitHub Issues] Created issue for ${group.kind}`);
     } catch (err) {
+      // vibescan-ignore-next-line SILENT_ERROR - Intentional: continue creating other issues
       console.error(
         `[GitHub Issues] Failed to create issue for ${group.kind}:`,
         err instanceof Error ? err.message : "unknown"
