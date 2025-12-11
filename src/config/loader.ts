@@ -128,6 +128,10 @@ export function loadConfig(repoRoot: string): LoadedConfig {
               parsed.llm?.max_model_tokens ?? DEFAULT_LLM_CONFIG.max_model_tokens,
             temperature: parsed.llm?.temperature ?? DEFAULT_LLM_CONFIG.temperature,
             max_files: parsed.llm?.max_files ?? DEFAULT_LLM_CONFIG.max_files,
+            validate_findings:
+              parsed.llm?.validate_findings ?? DEFAULT_LLM_CONFIG.validate_findings,
+            confidence_threshold:
+              parsed.llm?.confidence_threshold ?? DEFAULT_LLM_CONFIG.confidence_threshold,
           },
           overrides: parsed.overrides ?? [],
         };
@@ -154,6 +158,10 @@ export function loadConfig(repoRoot: string): LoadedConfig {
       rawConfig.llm?.max_model_tokens ?? DEFAULT_LLM_CONFIG.max_model_tokens,
     temperature: rawConfig.llm?.temperature ?? DEFAULT_LLM_CONFIG.temperature,
     max_files: rawConfig.llm?.max_files ?? DEFAULT_LLM_CONFIG.max_files,
+    validate_findings:
+      rawConfig.llm?.validate_findings ?? DEFAULT_LLM_CONFIG.validate_findings,
+    confidence_threshold:
+      rawConfig.llm?.confidence_threshold ?? DEFAULT_LLM_CONFIG.confidence_threshold,
   };
 
   const reporting: RequiredReportingConfig = {
@@ -279,6 +287,10 @@ export function loadConfigFromString(yamlContent: string): LoadedConfig {
             parsed.llm?.max_model_tokens ?? DEFAULT_LLM_CONFIG.max_model_tokens,
           temperature: parsed.llm?.temperature ?? DEFAULT_LLM_CONFIG.temperature,
           max_files: parsed.llm?.max_files ?? DEFAULT_LLM_CONFIG.max_files,
+          validate_findings:
+            parsed.llm?.validate_findings ?? DEFAULT_LLM_CONFIG.validate_findings,
+          confidence_threshold:
+            parsed.llm?.confidence_threshold ?? DEFAULT_LLM_CONFIG.confidence_threshold,
         },
         overrides: parsed.overrides ?? [],
       };
@@ -312,6 +324,10 @@ function buildLoadedConfig(rawConfig: VibeScanConfig): LoadedConfig {
       rawConfig.llm?.max_model_tokens ?? DEFAULT_LLM_CONFIG.max_model_tokens,
     temperature: rawConfig.llm?.temperature ?? DEFAULT_LLM_CONFIG.temperature,
     max_files: rawConfig.llm?.max_files ?? DEFAULT_LLM_CONFIG.max_files,
+    validate_findings:
+      rawConfig.llm?.validate_findings ?? DEFAULT_LLM_CONFIG.validate_findings,
+    confidence_threshold:
+      rawConfig.llm?.confidence_threshold ?? DEFAULT_LLM_CONFIG.confidence_threshold,
   };
 
   const reporting: RequiredReportingConfig = {
