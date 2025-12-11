@@ -475,6 +475,7 @@ async function withRetry<T>(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
+    // vibescan-ignore-next-line SILENT_ERROR
     } catch (error) {
       lastError = error;
 
@@ -599,6 +600,7 @@ export async function analyzeSnippetWithLlm(params: {
         try {
           parsed = JSON.parse(repaired);
           console.warn("[LLM] Successfully repaired truncated JSON response");
+        // vibescan-ignore-next-line SILENT_ERROR
         } catch (repairError) {
           // Repair failed, log both errors and return empty
           console.error("[LLM] Failed to parse JSON response:", parseError instanceof Error ? parseError.message : "unknown");
