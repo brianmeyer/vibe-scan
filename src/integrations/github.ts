@@ -717,7 +717,6 @@ function groupValidatedFindingsByKind(
   }
 
   // Filter out groups with no remaining findings after confidence filtering
-  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
   const activeGroups = Array.from(groups.values()).filter(g => g.count > 0);
 
   // Sort by severity (high first), then by average confidence (descending)

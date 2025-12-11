@@ -837,22 +837,20 @@ FINDINGS TO VALIDATE:
 ${findingsJson}
 \`\`\`
 
-Respond with a JSON array matching this structure (no markdown, no extra text):
+OUTPUT FORMAT:
+You MUST respond with ONLY a valid JSON array. No explanations, no markdown, no code blocks - just the raw JSON array.
 
-[
-  {
-    "id": "file:line:ruleId",
-    "confidence": 0.0 to 1.0,
-    "reasoning": "1 sentence explaining why this score"
-  }
-]
+Example output:
+[{"id":"src/file.ts:10:RULE_ID","confidence":0.8,"reasoning":"Real risk because..."},{"id":"src/other.ts:20:RULE_ID","confidence":0.2,"reasoning":"False positive because..."}]
+
+Your response (just the JSON array, nothing else):
 
 RULES:
-- Validate EVERY finding in the list
-- Be conservative - when in doubt, give benefit of the doubt to the code
+- Output ONLY the JSON array - no text before or after
+- Validate EVERY finding in the input list
+- Be conservative - when in doubt, give benefit of the doubt to the code (lower confidence)
 - Focus on whether the finding represents a REAL production risk
-- Consider the code context when available
-- Do NOT include any text outside the JSON array`;
+- Consider the code context when available`;
 }
 
 /**
@@ -928,21 +926,39 @@ export async function validateFindingsWithLlm(
       return null;
     }
 
-    // Parse JSON response
+    // Parse JSON response - try multiple extraction methods
     let parsed: unknown;
     try {
-      const jsonMatch = content.match(/\[[\s\S]*\]/);
-      const jsonStr = jsonMatch ? jsonMatch[0] : content;
+      // Method 1: Try to find JSON array directly
+      let jsonStr = content;
+
+      // Method 2: Extract from markdown code block
+      const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1].trim();
+      } else {
+        // Method 3: Find JSON array pattern
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          jsonStr = jsonMatch[0];
+        }
+      }
+
       parsed = JSON.parse(jsonStr);
     } catch (parseError) {
       console.error("[LLM] Failed to parse validation response:", parseError instanceof Error ? parseError.message : "unknown");
+      // Log truncated response for debugging
+      const truncated = content.length > 500 ? content.slice(0, 500) + "...[truncated]" : content;
+      console.error("[LLM] Raw response:", truncated);
       return null;
     }
 
     if (!Array.isArray(parsed)) {
-      console.warn("[LLM] Invalid validation response structure");
+      console.warn("[LLM] Invalid validation response structure - expected array, got:", typeof parsed);
       return null;
     }
+
+    console.log(`[LLM] Successfully parsed ${parsed.length} validation results`);
 
     // Build a map of validation results
     const validationMap = new Map<string, { confidence: number; reasoning?: string }>();
