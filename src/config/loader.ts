@@ -292,6 +292,12 @@ export function loadConfigFromString(yamlContent: string): LoadedConfig {
           confidence_threshold:
             parsed.llm?.confidence_threshold ?? DEFAULT_LLM_CONFIG.confidence_threshold,
         },
+        reporting: {
+          create_issues: parsed.reporting?.create_issues ?? DEFAULT_REPORTING_CONFIG.create_issues,
+          max_issues_per_pr: parsed.reporting?.max_issues_per_pr ?? DEFAULT_REPORTING_CONFIG.max_issues_per_pr,
+          issue_severity_threshold: parsed.reporting?.issue_severity_threshold ?? DEFAULT_REPORTING_CONFIG.issue_severity_threshold,
+          issue_labels: parsed.reporting?.issue_labels ?? DEFAULT_REPORTING_CONFIG.issue_labels,
+        },
         overrides: parsed.overrides ?? [],
       };
     }
