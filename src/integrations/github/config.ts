@@ -25,8 +25,10 @@ export async function fetchRepoConfig(
   baseRef: string
 ): Promise<LoadedConfig> {
   // Try to fetch from head branch first (allows PR to include config changes)
+  // Only 2 refs to try - not a scaling issue
   const refsToTry = [headRef, baseRef];
 
+  // vibescan-ignore-next-line MISSING_BATCHING,LOOPED_IO - Only 2 iterations max, not a scaling concern
   for (const ref of refsToTry) {
     try {
       console.log(`[Config] Attempting to fetch ${CONFIG_FILE_NAME} from ref: ${ref}`);

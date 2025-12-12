@@ -249,18 +249,25 @@ IMPORTANT SCORING GUIDELINES:
 - 0.0-0.29: Definite false positive - clear safe usage, not a real risk
 
 COMMON FALSE POSITIVE PATTERNS TO WATCH FOR:
-- Array.filter(), Array.map() flagged as database queries (UNBOUNDED_QUERY)
-- Intentional empty catch blocks with logging (SILENT_ERROR)
+- Array.filter(), Array.map(), Array.find() flagged as database queries (UNBOUNDED_QUERY)
+- Intentional empty catch blocks that log errors then continue (SILENT_ERROR) - check if console.error/warn comes before the catch
+- Try-catch with fallback behavior (returning null, default values) is NOT silent error handling
 - Test/mock code flagged for production risks
 - TypeScript type narrowing misidentified as unsafe
 - Environment-specific code with proper guards
 - Prototype/development files in expected locations
+- Sequential API calls for rate limiting compliance (LOOPED_IO) - if code intentionally processes one at a time
+- Small known-bounded loops (2-3 iterations max) flagged as MISSING_BATCHING or LOOPED_IO
+- Webhook handlers that log errors then return gracefully (intentional error isolation)
 
 ARCHITECTURE-SPECIFIC VALIDATION (be especially careful):
 - STATEFUL_SERVICE: Only flag if actual shared mutable state across requests
 - PROTOTYPE_INFRA: Only flag if truly temporary/experimental patterns
-- UNBOUNDED_QUERY: Must be actual database/API calls, not array operations
+- UNBOUNDED_QUERY: Must be actual database/API calls, not array operations (Array.filter/map/find are NOT database queries)
 - GLOBAL_MUTATION: Check if mutation is initialization vs. runtime modification
+- LOOPED_IO: Check if sequential processing is intentional (e.g., respecting rate limits, retry backoff). Also check loop bounds - if iterating over a small fixed set (2-5 items), this is NOT a scaling risk
+- MISSING_BATCHING: Only flag if the loop could realistically grow unbounded. Loops over fixed config or small known sets are fine
+- SILENT_ERROR: Check if error is logged before being swallowed. Returning null/fallback after logging is INTENTIONAL error handling, not silent failure. Optional features that fail gracefully are fine
 
 ${codeContextSections.length > 0 ? `CODE CONTEXT:\n${codeContextSections.join("\n\n")}` : ""}
 
