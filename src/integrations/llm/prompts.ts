@@ -241,12 +241,37 @@ ${fileFindings.map(f => `- Line ${f.line}: ${f.ruleId} - ${f.summary}`).join("\n
 
 Your task is to review each finding and assign a confidence score (0.0 to 1.0) indicating how likely it is to be a TRUE POSITIVE (real production risk).
 
+CRITICAL CONTEXT - VIBE-CODED PATTERNS:
+This tool detects "vibe-coded" patterns - AI-generated or hastily-written code that "looks correct" but lacks architectural judgment. Studies show:
+- 40% of AI-generated code contains security vulnerabilities
+- 73% of AI-built startups hit scaling failures within 6 months
+- Common failure modes: code works in development but fails with multiple instances, growing data, or unreliable dependencies
+
+BE SKEPTICAL OF CODE THAT:
+- Looks syntactically correct but makes hidden assumptions about infrastructure
+- Works for single-user/single-instance but won't scale horizontally
+- Has no defense against external service failures
+- Assumes data sizes will stay small forever
+- Lacks architectural patterns (retries, circuit breakers, batching) that production systems need
+
 IMPORTANT SCORING GUIDELINES:
 - 0.9-1.0: Definite true positive - clear production risk with strong evidence
 - 0.7-0.89: Likely true positive - probable risk, may need context
 - 0.5-0.69: Uncertain - could go either way, needs human review
 - 0.3-0.49: Likely false positive - pattern match but probably safe in context
 - 0.0-0.29: Definite false positive - clear safe usage, not a real risk
+
+VIBE-CODED PATTERNS THAT ARE TRUE POSITIVES (DO flag these):
+- Database queries without LIMIT that will grow with user data
+- Loops over user-generated data (comments, files, items) without bounds
+- External API calls without timeout, retry, or error handling
+- In-memory caches or state that will break with multiple server instances
+- Hard-coded URLs, credentials, or configuration that blocks deployment
+- "Happy path only" code that assumes external services never fail
+- Pagination that loads all items then slices (memory bomb waiting to happen)
+- Webhook/event handlers that don't deduplicate or handle retries
+- Check-then-act patterns without locking (will race under load)
+- Missing input validation on user-provided data sizes or counts
 
 COMMON FALSE POSITIVE PATTERNS TO WATCH FOR:
 - Array.filter(), Array.map(), Array.find() flagged as database queries (UNBOUNDED_QUERY)
@@ -287,7 +312,9 @@ Your response (just the JSON array, nothing else):
 RULES:
 - Output ONLY the JSON array - no text before or after
 - Validate EVERY finding in the input list
-- Be conservative - when in doubt, give benefit of the doubt to the code (lower confidence)
-- Focus on whether the finding represents a REAL production risk
+- Balance: Dismiss clear false positives (Array methods != DB queries) but FLAG real architectural risks
+- Ask yourself: "Will this code fail when there are 10,000 users? 100 server instances? When the database has 1M rows?"
+- Ask yourself: "What happens when the external API is slow, down, or rate-limited?"
+- Code that "works in dev" is not evidence of production safety - look for defensive patterns
 - Consider the code context when available`;
 }

@@ -7,7 +7,7 @@ import { config } from "../../env";
 import { isQuotaExceeded, recordTokenUsage } from "./quota";
 import { withRetry } from "./retry";
 import { buildExecutiveSummaryPrompt } from "./prompts";
-import { ExecutiveSummaryInput } from "./types";
+import { ExecutiveSummaryInput, MODEL_BALANCED } from "./types";
 
 /**
  * Generate an executive summary of findings using LLM.
@@ -40,9 +40,10 @@ export async function generateExecutiveSummary(
     const prompt = buildExecutiveSummaryPrompt(input);
 
     // Use retry logic for rate limit resilience
+    // Use balanced model for summaries - better quality than 8B, cheaper than 120B
     const completion = await withRetry(() =>
       client.chat.completions.create({
-        model: "llama-3.1-8b-instant",
+        model: MODEL_BALANCED,
         messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
         max_tokens: 256,
