@@ -1,5 +1,5 @@
 /**
- * Tests for Vibe Scan configuration and suppression system.
+ * Tests for Vibe Check configuration and suppression system.
  */
 
 import * as path from "path";
@@ -7,11 +7,11 @@ import { loadConfig, loadConfigFromString, createDefaultConfig } from "../src/co
 import { parseSuppressionDirectives, isSuppressed } from "../src/config/suppression";
 import { DEFAULT_RULE_CONFIG } from "../src/analysis/rules";
 
-const FIXTURES_DIR = path.join(__dirname, "fixtures/vibescan-config");
+const FIXTURES_DIR = path.join(__dirname, "fixtures/vibecheck-config");
 
 describe("Config Loading", () => {
   describe("loadConfig", () => {
-    it("should load config from .vibescan.yml file", () => {
+    it("should load config from .vibecheck.yml file", () => {
       const config = loadConfig(FIXTURES_DIR);
 
       expect(config.raw.version).toBe(1);
@@ -146,7 +146,7 @@ describe("Rule Configuration", () => {
 describe("Suppression Directives", () => {
   describe("parseSuppressionDirectives", () => {
     it("should parse file-level ALL suppression", () => {
-      const source = `/* vibescan-ignore-file ALL */
+      const source = `/* vibecheck-ignore-file ALL */
 const x = 1;`;
 
       const directives = parseSuppressionDirectives(source);
@@ -156,7 +156,7 @@ const x = 1;`;
     });
 
     it("should parse file-level specific rule suppression", () => {
-      const source = `/* vibescan-ignore-file CONSOLE_DEBUG */
+      const source = `/* vibecheck-ignore-file CONSOLE_DEBUG */
 console.log("test");`;
 
       const directives = parseSuppressionDirectives(source);
@@ -167,7 +167,7 @@ console.log("test");`;
     });
 
     it("should parse line suppression", () => {
-      const source = `const x = fetch("/api"); // vibescan-ignore-line UNSAFE_IO`;
+      const source = `const x = fetch("/api"); // vibecheck-ignore-line UNSAFE_IO`;
 
       const directives = parseSuppressionDirectives(source);
       expect(directives).toHaveLength(1);
@@ -177,7 +177,7 @@ console.log("test");`;
     });
 
     it("should parse next-line suppression", () => {
-      const source = `// vibescan-ignore-next-line TEMPORARY_HACK
+      const source = `// vibecheck-ignore-next-line TEMPORARY_HACK
 // TODO: fix this`;
 
       const directives = parseSuppressionDirectives(source);
@@ -188,7 +188,7 @@ console.log("test");`;
     });
 
     it("should parse multiple rules in one directive", () => {
-      const source = `// vibescan-ignore-next-line UNBOUNDED_QUERY,LOOPED_IO
+      const source = `// vibecheck-ignore-next-line UNBOUNDED_QUERY,LOOPED_IO
 const items = await db.findMany();`;
 
       const directives = parseSuppressionDirectives(source);
@@ -198,7 +198,7 @@ const items = await db.findMany();`;
     });
 
     it("should ignore invalid rule IDs", () => {
-      const source = `// vibescan-ignore-line INVALID_RULE,UNSAFE_IO`;
+      const source = `// vibecheck-ignore-line INVALID_RULE,UNSAFE_IO`;
 
       const directives = parseSuppressionDirectives(source);
       expect(directives).toHaveLength(1);
@@ -209,7 +209,7 @@ const items = await db.findMany();`;
 
   describe("isSuppressed", () => {
     it("should suppress with file-level ALL directive", () => {
-      const source = `/* vibescan-ignore-file ALL */`;
+      const source = `/* vibecheck-ignore-file ALL */`;
       const directives = parseSuppressionDirectives(source);
 
       expect(isSuppressed("UNSAFE_IO", 5, directives)).toBe(true);
@@ -217,7 +217,7 @@ const items = await db.findMany();`;
     });
 
     it("should suppress specific rules at file level", () => {
-      const source = `/* vibescan-ignore-file CONSOLE_DEBUG */`;
+      const source = `/* vibecheck-ignore-file CONSOLE_DEBUG */`;
       const directives = parseSuppressionDirectives(source);
 
       expect(isSuppressed("CONSOLE_DEBUG", 5, directives)).toBe(true);
@@ -225,7 +225,7 @@ const items = await db.findMany();`;
     });
 
     it("should suppress on same line with line directive", () => {
-      const source = `const x = 1; // vibescan-ignore-line UNSAFE_IO`;
+      const source = `const x = 1; // vibecheck-ignore-line UNSAFE_IO`;
       const directives = parseSuppressionDirectives(source);
 
       expect(isSuppressed("UNSAFE_IO", 1, directives)).toBe(true);
@@ -233,7 +233,7 @@ const items = await db.findMany();`;
     });
 
     it("should suppress next line with next-line directive", () => {
-      const source = `// vibescan-ignore-next-line TEMPORARY_HACK
+      const source = `// vibecheck-ignore-next-line TEMPORARY_HACK
 // TODO: fix`;
       const directives = parseSuppressionDirectives(source);
 

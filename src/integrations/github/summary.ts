@@ -34,9 +34,9 @@ export function prepareExecutiveSummaryInput(
     }
   }
 
-  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  // vibecheck-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
   const highCount = findings.filter(f => f.severity === "high").length;
-  // vibescan-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  // vibecheck-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
   const mediumCount = findings.filter(f => f.severity === "medium").length;
 
   return {

@@ -69,7 +69,7 @@ export function registerEventHandlers(): void {
     try {
       const octokit = createInstallationOctokit(installationId);
 
-      // Fetch repository configuration (.vibescan.yml)
+      // Fetch repository configuration (.vibecheck.yml)
       console.log(`[GitHub App] Fetching config for ${owner}/${repo}...`);
       const vibescanConfig = await fetchRepoConfig(octokit, owner, repo, headRef, baseRef);
 
@@ -94,13 +94,13 @@ export function registerEventHandlers(): void {
         await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
           owner,
           repo,
-          name: "Vibe Scan",
+          name: "Vibe Check",
           head_sha: headSha,
           status: "completed",
           conclusion: "neutral",
           output: {
             title: "No code changes to analyze",
-            summary: "This PR only contains non-code files (docs, config, etc.). Vibe Scan skipped.",
+            summary: "This PR only contains non-code files (docs, config, etc.). Vibe Check skipped.",
           },
         });
         return;
@@ -401,19 +401,19 @@ export function registerEventHandlers(): void {
       await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
         owner,
         repo,
-        name: "Vibe Scan",
+        name: "Vibe Check",
         head_sha: headSha,
         status: "completed",
         conclusion: "neutral",
         output: {
-          title: "Vibe Scan static + AI analysis",
+          title: "Vibe Check static + AI analysis",
           summary,
           text,
         },
       });
 
       console.log(
-        `[GitHub App] Created Vibe Scan check run with ${staticFindings.length} static finding(s) and ${llmIssueCount} AI finding(s) on ${owner}/${repo}@${headSha}`
+        `[GitHub App] Created Vibe Check check run with ${staticFindings.length} static finding(s) and ${llmIssueCount} AI finding(s) on ${owner}/${repo}@${headSha}`
       );
 
       // Post high-risk PR comment if there are high-severity findings (use filtered findings)
@@ -461,7 +461,7 @@ export function registerEventHandlers(): void {
         }
       }
     } catch (error) {
-      console.error("[GitHub App] Failed to create Vibe Scan check run:", error instanceof Error ? error.message : "unknown error");
+      console.error("[GitHub App] Failed to create Vibe Check check run:", error instanceof Error ? error.message : "unknown error");
     }
   });
 
@@ -544,7 +544,7 @@ export function registerEventHandlers(): void {
 
     try {
       await handleMarketplacePurchase(payload);
-      // vibescan-ignore-next-line SILENT_ERROR - Webhook handlers should not propagate errors to prevent cascading failures
+      // vibecheck-ignore-next-line SILENT_ERROR - Webhook handlers should not propagate errors to prevent cascading failures
     } catch (error) {
       console.error("[GitHub App] Error handling marketplace purchase:", error instanceof Error ? error.message : "unknown error");
     }

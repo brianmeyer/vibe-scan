@@ -1,5 +1,5 @@
 /**
- * Redis client singleton for Vibe Scan.
+ * Redis client singleton for Vibe Check.
  * Used for token quota tracking per installation.
  */
 

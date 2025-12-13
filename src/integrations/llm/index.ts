@@ -1,5 +1,5 @@
 /**
- * LLM integration module for Vibe Scan.
+ * LLM integration module for Vibe Check.
  *
  * This module provides an interface to call Groq's OpenAI-compatible API
  * to analyze code snippets for "vibe-coded" / production-risk issues.

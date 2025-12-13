@@ -113,7 +113,7 @@ export async function setInstallationPlan(installationId: number, plan: PlanTier
   try {
     await redis.set(getPlanKey(installationId), plan);
     console.log(`[Plans] Set plan for installation ${installationId}: ${plan}`);
-    // vibescan-ignore-next-line SILENT_ERROR - Fire-and-forget operation, default to free tier on failure
+    // vibecheck-ignore-next-line SILENT_ERROR - Fire-and-forget operation, default to free tier on failure
   } catch (error) {
     console.error("[Plans] Error setting plan:", error instanceof Error ? error.message : "unknown");
   }
@@ -129,7 +129,7 @@ export async function removeInstallationPlan(installationId: number): Promise<vo
   try {
     await redis.del(getPlanKey(installationId));
     console.log(`[Plans] Removed plan for installation ${installationId}`);
-    // vibescan-ignore-next-line SILENT_ERROR - Fire-and-forget cleanup, failure is non-critical
+    // vibecheck-ignore-next-line SILENT_ERROR - Fire-and-forget cleanup, failure is non-critical
   } catch (error) {
     console.error("[Plans] Error removing plan:", error instanceof Error ? error.message : "unknown");
   }

@@ -1,12 +1,12 @@
 /**
- * Rule types and default configurations for Vibe Scan.
+ * Rule types and default configurations for Vibe Check.
  *
  * This module defines the canonical list of rule IDs, severity levels,
  * and default configurations for all static analysis rules.
  */
 
 /**
- * All supported rule IDs in Vibe Scan.
+ * All supported rule IDs in Vibe Check.
  * DO NOT rename existing IDs - only extend.
  */
 export type RuleId =
