@@ -93,6 +93,7 @@ async function validateBatch(
 
   const prompt = buildValidationPrompt(findings, codeContext);
 
+  // vibecheck-ignore-next-line UNSAFE_IO - Error handling at call site via try/catch in validateFindingsWithLlm
   const completion = await withRetry(() =>
     client.chat.completions.create({
       model,

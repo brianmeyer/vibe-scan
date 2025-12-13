@@ -197,6 +197,6 @@ export const SIMPLE_RULES = new Set([
   "CONSOLE_DEBUG",        // Just console.log statements
   "HARDCODED_SECRET",     // Pattern matching for secrets
   "HARDCODED_URL",        // Pattern matching for URLs
-  "UNSAFE_EVAL",          // Direct eval() detection
+  "UNSAFE_EVAL",          // Dynamic code execution detection
   "BLOCKING_OPERATION",   // Direct sync API detection
 ]);
