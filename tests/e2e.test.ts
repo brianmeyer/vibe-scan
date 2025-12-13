@@ -505,7 +505,7 @@ reporting:
   create_issues: true
   max_issues_per_pr: 5
   issue_severity_threshold: medium
-  issue_labels: ["vibe-scan", "needs-review"]
+  issue_labels: ["vibe-scale", "needs-review"]
 `;
 
       const config = loadConfigFromString(configYaml);
