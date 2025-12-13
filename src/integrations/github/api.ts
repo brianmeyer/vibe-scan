@@ -66,7 +66,7 @@ export async function analyzeForApi(
   }
 
   // Fetch config
-  const vibescanConfig = await fetchRepoConfig(
+  const vibescaleConfig = await fetchRepoConfig(
     octokit,
     owner,
     repo,
@@ -106,7 +106,7 @@ export async function analyzeForApi(
 
   // Run static analysis
   const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, {
-    config: vibescanConfig,
+    config: vibescaleConfig,
     fileContents,
   });
 
@@ -126,13 +126,13 @@ export async function analyzeForApi(
   let validatedFindings: ValidatedFinding[] | null = null;
   let filteredCount = 0;
 
-  if (staticFindings.length > 0 && vibescanConfig.llm.validate_findings) {
+  if (staticFindings.length > 0 && vibescaleConfig.llm.validate_findings) {
     console.log("[API] Validating findings with LLM...");
     const validationResult = await validateFindingsWithLlm({
       findings: staticFindingSummaries,
       codeContext: fileContents,
       installationId,
-      confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+      confidenceThreshold: vibescaleConfig.llm.confidence_threshold,
     });
 
     if (validationResult) {
@@ -156,7 +156,7 @@ export async function analyzeForApi(
   const vibeScoreResult = computeVibeScore({
     staticFindings: findingsForScore,
     llmIssues: [],
-    options: { scoringConfig: vibescanConfig.scoring },
+    options: { scoringConfig: vibescaleConfig.scoring },
   });
 
   // Count by severity (Array.filter, not database queries)
@@ -169,7 +169,7 @@ export async function analyzeForApi(
 
   // Generate executive summary
   let executiveSummary: string | undefined;
-  if (findingsForScore.length > 0 && vibescanConfig.llm.enabled) {
+  if (findingsForScore.length > 0 && vibescaleConfig.llm.enabled) {
     try {
       const summaryInput = prepareExecutiveSummaryInput(findingsForScore, vibeScoreResult.score, installationId);
       executiveSummary = await generateExecutiveSummary(summaryInput) ?? undefined;

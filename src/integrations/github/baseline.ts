@@ -46,7 +46,7 @@ export async function performBaselineScan(params: BaselineScanParams): Promise<v
     console.log(`[Baseline] Default branch: ${defaultBranch}`);
 
     // Fetch config
-    const vibescanConfig = await fetchRepoConfig(octokit, owner, repoName, defaultBranch, defaultBranch);
+    const vibescaleConfig = await fetchRepoConfig(octokit, owner, repoName, defaultBranch, defaultBranch);
 
     // Get file tree
     const treeResponse = await octokit.request("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", {
@@ -112,7 +112,7 @@ export async function performBaselineScan(params: BaselineScanParams): Promise<v
 
     // Run analysis
     const baselineResult: BaselineAnalysisResult = analyzeRepository(fileContents, {
-      config: vibescanConfig,
+      config: vibescaleConfig,
     });
 
     console.log(`[Baseline] Analysis complete: ${baselineResult.findings.length} findings in ${baselineResult.filesAnalyzed} files`);
@@ -130,14 +130,14 @@ export async function performBaselineScan(params: BaselineScanParams): Promise<v
     // Validate findings with LLM for confidence scoring (if enabled)
     let validatedFindings: ValidatedFinding[] | null = null;
     let validationFilteredCount = 0;
-    if (baselineResult.findings.length > 0 && vibescanConfig.llm.validate_findings) {
+    if (baselineResult.findings.length > 0 && vibescaleConfig.llm.validate_findings) {
       try {
         console.log("[Baseline] Validating findings with LLM...");
         const validationResult = await validateFindingsWithLlm({
           findings: staticFindingSummaries,
           codeContext: fileContents,
           installationId,
-          confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+          confidenceThreshold: vibescaleConfig.llm.confidence_threshold,
         });
         if (validationResult) {
           validatedFindings = validationResult.validatedFindings;
@@ -166,7 +166,7 @@ export async function performBaselineScan(params: BaselineScanParams): Promise<v
     const vibeScoreResult = computeVibeScore({
       staticFindings: findingsForScore,
       llmIssues: [],
-      options: { scoringConfig: vibescanConfig.scoring },
+      options: { scoringConfig: vibescaleConfig.scoring },
     });
 
     // Create issue

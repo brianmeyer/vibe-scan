@@ -17,7 +17,7 @@ import {
   isValidRuleId,
 } from "../analysis/rules";
 import {
-  VibeScanConfig,
+  VibeScaleConfig,
   RequiredScoringConfig,
   RequiredLlmConfig,
   RequiredReportingConfig,
@@ -34,7 +34,7 @@ export interface LoadedConfig {
   /**
    * The raw parsed configuration (or defaults if no file found).
    */
-  raw: VibeScanConfig;
+  raw: VibeScaleConfig;
 
   /**
    * Check if a file should be completely ignored from analysis.
@@ -75,7 +75,7 @@ export interface LoadedConfig {
 /**
  * Default empty configuration when no .vibescale.yml is present.
  */
-const DEFAULT_CONFIG: VibeScanConfig = {
+const DEFAULT_CONFIG: VibeScaleConfig = {
   version: 1,
   rules: {},
   files: DEFAULT_FILES_CONFIG,
@@ -98,13 +98,13 @@ const CONFIG_FILE_NAME = ".vibescale.yml";
  */
 export function loadConfig(repoRoot: string): LoadedConfig {
   const configPath = path.join(repoRoot, CONFIG_FILE_NAME);
-  let rawConfig: VibeScanConfig = { ...DEFAULT_CONFIG };
+  let rawConfig: VibeScaleConfig = { ...DEFAULT_CONFIG };
 
   // Try to load the config file
   if (fs.existsSync(configPath)) {
     try {
       const fileContents = fs.readFileSync(configPath, "utf-8");
-      const parsed = yaml.load(fileContents) as Partial<VibeScanConfig> | null;
+      const parsed = yaml.load(fileContents) as Partial<VibeScaleConfig> | null;
 
       if (parsed && typeof parsed === "object") {
         rawConfig = {
@@ -260,10 +260,10 @@ function mergeRuleConfig(
  * @returns LoadedConfig with resolved values and helper methods
  */
 export function loadConfigFromString(yamlContent: string): LoadedConfig {
-  let rawConfig: VibeScanConfig = { ...DEFAULT_CONFIG };
+  let rawConfig: VibeScaleConfig = { ...DEFAULT_CONFIG };
 
   try {
-    const parsed = yaml.load(yamlContent) as Partial<VibeScanConfig> | null;
+    const parsed = yaml.load(yamlContent) as Partial<VibeScaleConfig> | null;
 
     if (parsed && typeof parsed === "object") {
       rawConfig = {
@@ -310,10 +310,10 @@ export function loadConfigFromString(yamlContent: string): LoadedConfig {
 }
 
 /**
- * Build a LoadedConfig from a raw VibeScanConfig.
+ * Build a LoadedConfig from a raw VibeScaleConfig.
  * Internal helper to avoid code duplication.
  */
-function buildLoadedConfig(rawConfig: VibeScanConfig): LoadedConfig {
+function buildLoadedConfig(rawConfig: VibeScaleConfig): LoadedConfig {
   // Build resolved scoring and LLM configs
   const scoring: RequiredScoringConfig = {
     high_risk_vibe_score:

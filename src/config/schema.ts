@@ -10,7 +10,7 @@ import { RuleConfig, RuleId, RuleOverride } from "../analysis/rules";
 /**
  * Scoring configuration options.
  */
-export interface VibeScanScoringConfig {
+export interface VibeScaleScoringConfig {
   /**
    * Score threshold below which a PR is marked as "high risk".
    * Default: 60
@@ -27,7 +27,7 @@ export interface VibeScanScoringConfig {
 /**
  * LLM analysis configuration options.
  */
-export interface VibeScanLlmConfig {
+export interface VibeScaleLlmConfig {
   /**
    * Whether LLM analysis is enabled.
    * Default: true
@@ -70,7 +70,7 @@ export interface VibeScanLlmConfig {
 /**
  * File filtering configuration options.
  */
-export interface VibeScanFilesConfig {
+export interface VibeScaleFilesConfig {
   /**
    * Glob patterns for files to completely ignore from analysis.
    * Example: ["tests/**", "**\/*.spec.ts"]
@@ -88,7 +88,7 @@ export interface VibeScanFilesConfig {
 /**
  * Reporting/output configuration options.
  */
-export interface VibeScanReportingConfig {
+export interface VibeScaleReportingConfig {
   /**
    * Whether to create GitHub issues for high-severity findings.
    * Default: false
@@ -117,7 +117,7 @@ export interface VibeScanReportingConfig {
 /**
  * Complete .vibescale.yml configuration schema.
  */
-export interface VibeScanConfig {
+export interface VibeScaleConfig {
   /**
    * Config file version. Currently only version 1 is supported.
    */
@@ -132,22 +132,22 @@ export interface VibeScanConfig {
   /**
    * File filtering options.
    */
-  files?: VibeScanFilesConfig;
+  files?: VibeScaleFilesConfig;
 
   /**
    * Scoring configuration options.
    */
-  scoring?: VibeScanScoringConfig;
+  scoring?: VibeScaleScoringConfig;
 
   /**
    * LLM analysis configuration options.
    */
-  llm?: VibeScanLlmConfig;
+  llm?: VibeScaleLlmConfig;
 
   /**
    * Reporting/output configuration options.
    */
-  reporting?: VibeScanReportingConfig;
+  reporting?: VibeScaleReportingConfig;
 
   /**
    * Path-specific rule overrides.

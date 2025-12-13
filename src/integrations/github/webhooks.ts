@@ -71,7 +71,7 @@ export function registerEventHandlers(): void {
 
       // Fetch repository configuration (.vibescale.yml)
       console.log(`[GitHub App] Fetching config for ${owner}/${repo}...`);
-      const vibescanConfig = await fetchRepoConfig(octokit, owner, repo, headRef, baseRef);
+      const vibescaleConfig = await fetchRepoConfig(octokit, owner, repo, headRef, baseRef);
 
       // Fetch PR files with patches
       console.log(`[GitHub App] Fetching files for PR #${pullNumber}...`);
@@ -110,7 +110,7 @@ export function registerEventHandlers(): void {
       console.log(`[GitHub App] Fetching file contents for AST analysis...`);
       const fileContents = new Map<string, string>();
       const astCandidates = prFiles.filter(
-        (f) => f.patch && canAnalyzeWithAST(f.filename) && !vibescanConfig.isFileIgnored(f.filename)
+        (f) => f.patch && canAnalyzeWithAST(f.filename) && !vibescaleConfig.isFileIgnored(f.filename)
       );
 
       if (astCandidates.length > 0) {
@@ -128,7 +128,7 @@ export function registerEventHandlers(): void {
 
       console.log(`[GitHub App] Analyzing ${prFiles.length} file(s) (${fileContents.size} with AST)...`);
       const staticFindings = analyzePullRequestPatchesWithConfig(prFiles, {
-        config: vibescanConfig,
+        config: vibescaleConfig,
         fileContents,
       });
 
@@ -219,7 +219,7 @@ export function registerEventHandlers(): void {
       const vibeScoreResult: VibeScoreResult = computeVibeScore({
         staticFindings,
         llmIssues,
-        options: { scoringConfig: vibescanConfig.scoring },
+        options: { scoringConfig: vibescaleConfig.scoring },
       });
       const vibeScore = vibeScoreResult.score;
       const vibeLabel = vibeScoreResult.label;
@@ -250,14 +250,14 @@ export function registerEventHandlers(): void {
       // Validate findings with LLM for confidence scoring (if enabled)
       let validatedFindings: ValidatedFinding[] | null = null;
       let validationFilteredCount = 0;
-      if (totalFindings > 0 && vibescanConfig.llm.validate_findings) {
+      if (totalFindings > 0 && vibescaleConfig.llm.validate_findings) {
         try {
           console.log("[PR Check] Validating static findings with LLM...");
           const validationResult = await validateFindingsWithLlm({
             findings: staticFindingSummaries,
             codeContext: fileContents,
             installationId,
-            confidenceThreshold: vibescanConfig.llm.confidence_threshold,
+            confidenceThreshold: vibescaleConfig.llm.confidence_threshold,
           });
           if (validationResult) {
             validatedFindings = validationResult.validatedFindings;
@@ -292,7 +292,7 @@ export function registerEventHandlers(): void {
           // Use validated findings with confidence scores
           const groupedValidated = groupValidatedFindingsByKind(
             validatedFindings,
-            vibescanConfig.llm.confidence_threshold
+            vibescaleConfig.llm.confidence_threshold
           );
           text += buildValidatedFindingsDisplay(groupedValidated, validationFilteredCount);
         } else {
@@ -442,7 +442,7 @@ export function registerEventHandlers(): void {
       }
 
       // Create GitHub issues for high-severity findings (if enabled)
-      if (vibescanConfig.reporting.create_issues && staticFindings.length > 0) {
+      if (vibescaleConfig.reporting.create_issues && staticFindings.length > 0) {
         try {
           const issuesCreated = await createIssuesForFindings({
             octokit,
@@ -451,7 +451,7 @@ export function registerEventHandlers(): void {
             prNumber: pullNumber,
             prTitle: payload.pull_request.title,
             findings: staticFindings,
-            config: vibescanConfig.reporting,
+            config: vibescaleConfig.reporting,
           });
           if (issuesCreated > 0) {
             console.log(`[GitHub App] Created ${issuesCreated} issue(s) for high-severity findings`);
