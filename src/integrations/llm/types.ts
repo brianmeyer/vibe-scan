@@ -157,8 +157,15 @@ export const MAX_FINDINGS_PER_CALL = 30;
 /** Fast model for simple tasks */
 export const MODEL_FAST = "llama-3.1-8b-instant";
 
-/** Reasoning model for complex validation */
-export const MODEL_REASONING = "openai/gpt-oss-120b";
+/**
+ * Reasoning model for complex validation.
+ * Using Qwen3-32B for better prompt adherence and structured output.
+ * Community testing shows Qwen3 follows instructions more reliably than GPT-OSS.
+ * - 535 tok/s on Groq, $0.29/M input, $0.59/M output
+ * - Better at diff-based editing and JSON formatting
+ * - Production ready with 128K context window
+ */
+export const MODEL_REASONING = "qwen/qwen3-32b";
 
 /** Balanced model for summaries */
 export const MODEL_BALANCED = "openai/gpt-oss-20b";

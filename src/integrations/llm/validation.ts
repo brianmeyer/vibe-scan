@@ -180,6 +180,8 @@ export async function validateFindingsWithLlm(
     });
 
     // Validate both tiers in parallel
+    // - Simple rules: fast 8B model for pattern matching
+    // - Complex rules: Qwen3-32B for better prompt adherence and architectural reasoning
     const [simpleResult, complexResult] = await Promise.all([
       simpleFindings.length > 0
         ? validateBatch(client, simpleFindings, codeContext, MODEL_FAST, installationId)
