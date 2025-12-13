@@ -39,7 +39,7 @@ export function buildHighRiskCommentBody(params: {
     return null;
   }
 
-  let body = `🚨 **Vibe Scan Summary**\n\n`;
+  let body = `🚨 **Vibe Check Summary**\n\n`;
   body += `**Vibe Score: ${vibeScore} (${vibeLabel})**\n\n`;
 
   // Add compact architecture summary at the top

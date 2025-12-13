@@ -1,6 +1,6 @@
-# Vibe Scan
+# Vibe Check
 
-[![Vibe Score](https://img.shields.io/badge/vibe--scan-enabled-brightgreen)](https://github.com/brianmeyer/vibe-scan)
+[![Vibe Score](https://img.shields.io/badge/vibe--check-enabled-brightgreen)](https://github.com/brianmeyer/vibe-check)
 
 A GitHub App that analyzes pull requests for "vibe-coded" production risks. Combines **AST-based static analysis** with **LLM-powered review** to catch scaling issues, concurrency problems, and other patterns that commonly cause production failures in AI-generated or prototype code.
 
@@ -16,7 +16,7 @@ A GitHub App that analyzes pull requests for "vibe-coded" production risks. Comb
 
 ### Multi-Language AST Analysis
 
-Vibe Scan uses **Abstract Syntax Tree (AST) parsing** for accurate, scope-aware analysis with **regex fallback** for unsupported languages:
+Vibe Check uses **Abstract Syntax Tree (AST) parsing** for accurate, scope-aware analysis with **regex fallback** for unsupported languages:
 
 | Language | Parser | Features |
 |----------|--------|----------|
@@ -84,7 +84,7 @@ A 0-100 score indicating production readiness:
 
 ## Configuration
 
-Create a `.vibescan.yml` in your repository root:
+Create a `.vibecheck.yml` in your repository root:
 
 ```yaml
 version: 1
@@ -121,20 +121,20 @@ overrides:
 Suppress findings with comments (works in any language):
 
 ```typescript
-/* vibescan-ignore-file ALL */
+/* vibecheck-ignore-file ALL */
 
-// vibescan-ignore-next-line UNBOUNDED_QUERY
+// vibecheck-ignore-next-line UNBOUNDED_QUERY
 const users = await db.users.findMany();
 
-const data = await fetch("/api"); // vibescan-ignore-line UNSAFE_IO
+const data = await fetch("/api"); // vibecheck-ignore-line UNSAFE_IO
 
-// vibescan-ignore-next-line UNSAFE_IO,SILENT_ERROR
+// vibecheck-ignore-next-line UNSAFE_IO,SILENT_ERROR
 ```
 
 ```python
-# vibescan-ignore-file ALL
+# vibecheck-ignore-file ALL
 
-# vibescan-ignore-next-line UNBOUNDED_QUERY
+# vibecheck-ignore-next-line UNBOUNDED_QUERY
 users = db.query("SELECT * FROM users")
 ```
 
@@ -260,8 +260,8 @@ src/
 │   ├── scoring.ts         # Vibe Score computation
 │   └── structure.ts       # Code structure extraction
 ├── config/
-│   ├── schema.ts          # VibeScanConfig type definitions
-│   ├── loader.ts          # .vibescan.yml loading
+│   ├── schema.ts          # VibeCheckConfig type definitions
+│   ├── loader.ts          # .vibecheck.yml loading
 │   └── suppression.ts     # Inline suppression parsing
 └── integrations/
     ├── github.ts          # GitHub App webhook handlers

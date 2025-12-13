@@ -1,6 +1,6 @@
 version: 1
 
-# Vibe Scan configuration for the Vibe Scan repo itself
+# Vibe Check configuration for the Vibe Check repo itself
 # The analyzer file contains pattern strings that would trigger false positives
 
 files:
@@ -24,4 +24,4 @@ reporting:
   create_issues: true
   max_issues_per_pr: 3
   issue_severity_threshold: "high"
-  issue_labels: ["vibe-scan", "production-risk"]
+  issue_labels: ["vibe-check", "production-risk"]

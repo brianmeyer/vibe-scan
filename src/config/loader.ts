@@ -1,7 +1,7 @@
 /**
- * Configuration loader for Vibe Scan.
+ * Configuration loader for Vibe Check.
  *
- * Loads and merges configuration from .vibescan.yml files,
+ * Loads and merges configuration from .vibecheck.yml files,
  * applying defaults and handling overrides.
  */
 
@@ -73,7 +73,7 @@ export interface LoadedConfig {
 }
 
 /**
- * Default empty configuration when no .vibescan.yml is present.
+ * Default empty configuration when no .vibecheck.yml is present.
  */
 const DEFAULT_CONFIG: VibeScanConfig = {
   version: 1,
@@ -88,7 +88,7 @@ const DEFAULT_CONFIG: VibeScanConfig = {
 /**
  * Config file name to search for in repo root.
  */
-const CONFIG_FILE_NAME = ".vibescan.yml";
+const CONFIG_FILE_NAME = ".vibecheck.yml";
 
 /**
  * Load configuration from a repository root directory.

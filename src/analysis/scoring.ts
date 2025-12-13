@@ -95,7 +95,7 @@ const BASE_PENALTIES = {
  */
 export interface VibeScoreOptions {
   /**
-   * Scoring configuration from .vibescan.yml.
+   * Scoring configuration from .vibecheck.yml.
    * If not provided, uses defaults.
    */
   scoringConfig?: RequiredScoringConfig;

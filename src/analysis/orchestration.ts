@@ -38,7 +38,7 @@ export interface AnalysisOptions {
  * Analyze all PR files with config and suppression support.
  *
  * This is the preferred entry point for analysis that respects:
- * - .vibescan.yml configuration
+ * - .vibecheck.yml configuration
  * - File ignore patterns
  * - Rule enable/disable settings
  * - Per-path rule overrides

@@ -2,7 +2,7 @@
  * GitHub integration module.
  *
  * This module provides GitHub webhook handling, PR analysis,
- * and issue creation for Vibe Scan.
+ * and issue creation for Vibe Check.
  */
 
 // Re-export main webhook components

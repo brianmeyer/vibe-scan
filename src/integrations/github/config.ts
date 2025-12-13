@@ -1,5 +1,5 @@
 /**
- * Repository configuration fetching (.vibescan.yml).
+ * Repository configuration fetching (.vibecheck.yml).
  */
 
 import { Octokit } from "octokit";
@@ -7,7 +7,7 @@ import { createDefaultConfig, loadConfigFromString, LoadedConfig } from "../../c
 import { CONFIG_FILE_NAME } from "./types";
 
 /**
- * Fetch the .vibescan.yml configuration from a repository.
+ * Fetch the .vibecheck.yml configuration from a repository.
  * Tries the PR head branch first, then falls back to the base branch.
  *
  * @param octokit - Authenticated Octokit instance
@@ -28,7 +28,7 @@ export async function fetchRepoConfig(
   // Only 2 refs to try - not a scaling issue
   const refsToTry = [headRef, baseRef];
 
-  // vibescan-ignore-next-line MISSING_BATCHING,LOOPED_IO - Only 2 iterations max, not a scaling concern
+  // vibecheck-ignore-next-line MISSING_BATCHING,LOOPED_IO - Only 2 iterations max, not a scaling concern
   for (const ref of refsToTry) {
     try {
       console.log(`[Config] Attempting to fetch ${CONFIG_FILE_NAME} from ref: ${ref}`);
