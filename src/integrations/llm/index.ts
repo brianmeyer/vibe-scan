@@ -26,7 +26,14 @@ export type {
 } from "./types";
 
 // Re-export constants
-export { LLM_ISSUE_KIND_LABELS } from "./types";
+export {
+  LLM_ISSUE_KIND_LABELS,
+  MODEL_FAST,
+  MODEL_REASONING,
+  MODEL_BALANCED,
+  COMPLEX_RULES,
+  SIMPLE_RULES,
+} from "./types";
 
 // Re-export main functions
 export { analyzeSnippetWithLlm } from "./analysis";

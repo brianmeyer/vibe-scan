@@ -8,7 +8,7 @@ import { isQuotaExceeded, recordTokenUsage } from "./quota";
 import { withRetry } from "./retry";
 import { buildVibePrompt } from "./prompts";
 import { attemptJsonRepair, validateAndNormalize } from "./parsing";
-import { LlmAnalysisResult, StaticFindingSummary } from "./types";
+import { LlmAnalysisResult, StaticFindingSummary, MODEL_FAST } from "./types";
 
 /**
  * Analyze a code snippet using the LLM.
@@ -48,7 +48,7 @@ export async function analyzeSnippetWithLlm(params: {
     return null;
   }
 
-  const model = params.modelName || "llama-3.1-8b-instant";
+  const model = params.modelName || MODEL_FAST;
   const prompt = buildVibePrompt({
     file: params.file,
     language: params.language,

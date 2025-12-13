@@ -1,5 +1,6 @@
 /**
  * LLM-based validation of static findings with confidence scoring.
+ * Uses tiered models: fast model for simple rules, reasoning model for complex rules.
  */
 
 import OpenAI from "openai";
@@ -11,15 +12,124 @@ import {
   ValidateFindingsInput,
   ValidateFindingsResult,
   ValidatedFinding,
+  StaticFindingSummary,
   MAX_FINDINGS_PER_CALL,
+  MODEL_FAST,
+  MODEL_REASONING,
+  COMPLEX_RULES,
 } from "./types";
+
+/**
+ * Classify a finding as simple or complex based on rule type.
+ */
+function isComplexFinding(finding: StaticFindingSummary): boolean {
+  return COMPLEX_RULES.has(finding.ruleId);
+}
+
+/**
+ * Parse LLM validation response into a map of results.
+ */
+function parseValidationResponse(
+  content: string
+): Map<string, { confidence: number; reasoning?: string }> | null {
+  let parsed: unknown;
+  try {
+    let jsonStr = content;
+
+    // Extract from markdown code block
+    const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1].trim();
+    } else {
+      // Find JSON array pattern
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+      }
+    }
+
+    parsed = JSON.parse(jsonStr);
+  } catch (parseError) {
+    console.error("[LLM] Failed to parse validation response:", parseError instanceof Error ? parseError.message : "unknown");
+    const truncated = content.length > 500 ? content.slice(0, 500) + "...[truncated]" : content;
+    console.error("[LLM] Raw response:", truncated);
+    return null;
+  }
+
+  if (!Array.isArray(parsed)) {
+    console.warn("[LLM] Invalid validation response structure - expected array, got:", typeof parsed);
+    return null;
+  }
+
+  const validationMap = new Map<string, { confidence: number; reasoning?: string }>();
+  for (const item of parsed) {
+    if (item && typeof item === "object") {
+      const obj = item as Record<string, unknown>;
+      if (typeof obj.id === "string" && typeof obj.confidence === "number") {
+        validationMap.set(obj.id, {
+          confidence: Math.max(0, Math.min(1, obj.confidence)),
+          reasoning: typeof obj.reasoning === "string" ? obj.reasoning : undefined,
+        });
+      }
+    }
+  }
+
+  return validationMap;
+}
+
+/**
+ * Validate a batch of findings with a specific model.
+ */
+async function validateBatch(
+  client: OpenAI,
+  findings: StaticFindingSummary[],
+  codeContext: Map<string, string>,
+  model: string,
+  installationId?: number
+): Promise<{ validationMap: Map<string, { confidence: number; reasoning?: string }>; tokensUsed: number } | null> {
+  if (findings.length === 0) {
+    return { validationMap: new Map(), tokensUsed: 0 };
+  }
+
+  const prompt = buildValidationPrompt(findings, codeContext);
+
+  const completion = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
+      max_tokens: 2048,
+    })
+  );
+
+  const tokensUsed = completion.usage?.total_tokens || 0;
+
+  if (installationId) {
+    await recordTokenUsage(installationId, tokensUsed);
+  }
+
+  const content = completion.choices[0]?.message?.content;
+  if (!content) {
+    console.warn(`[LLM] Empty validation response from ${model}`);
+    return null;
+  }
+
+  const validationMap = parseValidationResponse(content);
+  if (!validationMap) {
+    return null;
+  }
+
+  return { validationMap, tokensUsed };
+}
 
 /**
  * Validate static findings with LLM to filter false positives and assign confidence scores.
  *
- * This is the key function for implementing broad static detection + LLM filtering.
- * It takes static findings and returns them with confidence scores, allowing the
- * display layer to filter or highlight based on confidence.
+ * Uses a tiered approach:
+ * - Simple rules (TEMPORARY_HACK, etc.) use fast 8B model
+ * - Complex rules (UNBOUNDED_QUERY, SILENT_ERROR, etc.) use 120B reasoning model
+ *
+ * This optimizes cost while ensuring complex patterns get proper analysis.
  */
 export async function validateFindingsWithLlm(
   input: ValidateFindingsInput
@@ -50,12 +160,18 @@ export async function validateFindingsWithLlm(
     };
   }
 
-  // Cap findings to avoid token explosion (process in batches if needed)
+  // Cap findings to avoid token explosion
   const cappedFindings = findings.slice(0, MAX_FINDINGS_PER_CALL);
 
   if (findings.length > MAX_FINDINGS_PER_CALL) {
     console.warn(`[LLM] Capping validation to ${MAX_FINDINGS_PER_CALL} findings (${findings.length} total)`);
   }
+
+  // Split findings into simple and complex
+  const simpleFindings = cappedFindings.filter(f => !isComplexFinding(f));
+  const complexFindings = cappedFindings.filter(f => isComplexFinding(f));
+
+  console.log(`[LLM] Tiered validation: ${simpleFindings.length} simple (${MODEL_FAST}), ${complexFindings.length} complex (${MODEL_REASONING})`);
 
   try {
     const client = new OpenAI({
@@ -63,79 +179,34 @@ export async function validateFindingsWithLlm(
       baseURL: "https://api.groq.com/openai/v1",
     });
 
-    const prompt = buildValidationPrompt(cappedFindings, codeContext);
+    // Validate both tiers in parallel
+    const [simpleResult, complexResult] = await Promise.all([
+      simpleFindings.length > 0
+        ? validateBatch(client, simpleFindings, codeContext, MODEL_FAST, installationId)
+        : Promise.resolve({ validationMap: new Map(), tokensUsed: 0 }),
+      complexFindings.length > 0
+        ? validateBatch(client, complexFindings, codeContext, MODEL_REASONING, installationId)
+        : Promise.resolve({ validationMap: new Map(), tokensUsed: 0 }),
+    ]);
 
-    // Use retry logic for rate limit resilience
-    const completion = await withRetry(() =>
-      client.chat.completions.create({
-        model: "llama-3.1-8b-instant",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1,
-        max_tokens: 2048,
-      })
-    );
-
-    const tokensUsed = completion.usage?.total_tokens || 0;
-
-    // Record token usage
-    if (installationId) {
-      await recordTokenUsage(installationId, tokensUsed);
-      console.log(`[LLM] Finding validation used ${tokensUsed} tokens`);
-    }
-
-    const content = completion.choices[0]?.message?.content;
-    if (!content) {
-      console.warn("[LLM] Empty validation response");
-      return null;
-    }
-
-    // Parse JSON response - try multiple extraction methods
-    let parsed: unknown;
-    try {
-      // Method 1: Try to find JSON array directly
-      let jsonStr = content;
-
-      // Method 2: Extract from markdown code block
-      const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (codeBlockMatch) {
-        jsonStr = codeBlockMatch[1].trim();
-      } else {
-        // Method 3: Find JSON array pattern
-        const jsonMatch = content.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
-          jsonStr = jsonMatch[0];
-        }
-      }
-
-      parsed = JSON.parse(jsonStr);
-    } catch (parseError) {
-      console.error("[LLM] Failed to parse validation response:", parseError instanceof Error ? parseError.message : "unknown");
-      // Log truncated response for debugging
-      const truncated = content.length > 500 ? content.slice(0, 500) + "...[truncated]" : content;
-      console.error("[LLM] Raw response:", truncated);
-      return null;
-    }
-
-    if (!Array.isArray(parsed)) {
-      console.warn("[LLM] Invalid validation response structure - expected array, got:", typeof parsed);
-      return null;
-    }
-
-    console.log(`[LLM] Successfully parsed ${parsed.length} validation results`);
-
-    // Build a map of validation results
+    // Merge validation maps
     const validationMap = new Map<string, { confidence: number; reasoning?: string }>();
-    for (const item of parsed) {
-      if (item && typeof item === "object") {
-        const obj = item as Record<string, unknown>;
-        if (typeof obj.id === "string" && typeof obj.confidence === "number") {
-          validationMap.set(obj.id, {
-            confidence: Math.max(0, Math.min(1, obj.confidence)),
-            reasoning: typeof obj.reasoning === "string" ? obj.reasoning : undefined,
-          });
-        }
+
+    if (simpleResult) {
+      for (const [id, result] of simpleResult.validationMap) {
+        validationMap.set(id, result);
       }
     }
+
+    if (complexResult) {
+      for (const [id, result] of complexResult.validationMap) {
+        validationMap.set(id, result);
+      }
+    }
+
+    const tokensUsed = (simpleResult?.tokensUsed || 0) + (complexResult?.tokensUsed || 0);
+
+    console.log(`[LLM] Successfully validated ${validationMap.size}/${cappedFindings.length} findings, ${tokensUsed} tokens total`);
 
     // Map findings to validated findings
     const validatedFindings: ValidatedFinding[] = [];
@@ -145,8 +216,9 @@ export async function validateFindingsWithLlm(
       const id = `${finding.file}:${finding.line}:${finding.ruleId}`;
       const validation = validationMap.get(id);
 
-      // Default to 0.7 confidence if LLM didn't validate this finding
-      const confidence = validation?.confidence ?? 0.7;
+      // Default confidence based on complexity - complex rules get lower default (more skeptical)
+      const defaultConfidence = isComplexFinding(finding) ? 0.5 : 0.7;
+      const confidence = validation?.confidence ?? defaultConfidence;
       const likelyFalsePositive = confidence < confidenceThreshold;
 
       if (likelyFalsePositive) {
@@ -174,7 +246,7 @@ export async function validateFindingsWithLlm(
         line: finding.line,
         severity: finding.severity,
         summary: finding.summary,
-        confidence: 0.7, // Default confidence for uncapped findings
+        confidence: 0.7,
         reasoning: "Not validated due to batch limit",
         likelyFalsePositive: false,
       });

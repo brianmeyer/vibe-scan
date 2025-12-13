@@ -149,3 +149,47 @@ export const BASE_DELAY_MS = 1000;
 
 /** Maximum findings to validate per LLM call */
 export const MAX_FINDINGS_PER_CALL = 30;
+
+// ============================================================================
+// Model Tiers
+// ============================================================================
+
+/** Fast model for simple tasks */
+export const MODEL_FAST = "llama-3.1-8b-instant";
+
+/** Reasoning model for complex validation */
+export const MODEL_REASONING = "openai/gpt-oss-120b";
+
+/** Balanced model for summaries */
+export const MODEL_BALANCED = "openai/gpt-oss-20b";
+
+/**
+ * Rules that require deeper reasoning to validate properly.
+ * These benefit from a larger model that can:
+ * - Distinguish Array methods from database queries
+ * - Trace error handling flow
+ * - Understand loop bounds and scaling implications
+ * - Analyze cross-file/service architecture
+ */
+export const COMPLEX_RULES = new Set([
+  "UNBOUNDED_QUERY",      // Need to distinguish Array.filter vs DB query
+  "SILENT_ERROR",         // Need to trace if error is logged before catch
+  "LOOPED_IO",            // Need to understand loop bounds and intent
+  "MISSING_BATCHING",     // Need to understand if loop could grow unbounded
+  "STATEFUL_SERVICE",     // Need to understand state sharing patterns
+  "GLOBAL_MUTATION",      // Need to understand init vs runtime mutation
+  "CHECK_THEN_ACT_RACE",  // Need to understand concurrency patterns
+  "RETRY_STORM_RISK",     // Need to understand retry/backoff patterns
+]);
+
+/**
+ * Rules that are simple pattern matches - fast model is sufficient.
+ */
+export const SIMPLE_RULES = new Set([
+  "TEMPORARY_HACK",       // Just TODO/FIXME comments
+  "CONSOLE_DEBUG",        // Just console.log statements
+  "HARDCODED_SECRET",     // Pattern matching for secrets
+  "HARDCODED_URL",        // Pattern matching for URLs
+  "UNSAFE_EVAL",          // Direct eval() detection
+  "BLOCKING_OPERATION",   // Direct sync API detection
+]);
