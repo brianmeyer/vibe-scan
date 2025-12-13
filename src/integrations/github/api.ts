@@ -39,7 +39,7 @@ export async function analyzeForApi(
       vibeLabel: "error",
       findings: { total: 0, high: 0, medium: 0, low: 0, filtered: 0 },
       details: [],
-      error: "Vibe Check is not installed on this repository. Please install the GitHub App first.",
+      error: "Vibe Scale is not installed on this repository. Please install the GitHub App first.",
     };
   }
 
@@ -96,7 +96,7 @@ export async function analyzeForApi(
     .filter((f) => CODE_EXTENSIONS.some((ext) => f.endsWith(ext)))
     .slice(0, 20);
 
-  // vibecheck-ignore-next-line LOOPED_IO - Intentional sequential fetching for GitHub API rate limiting
+  // vibescale-ignore-next-line LOOPED_IO - Intentional sequential fetching for GitHub API rate limiting
   for (const filePath of filesToFetch) {
     const content = await fetchFileContent(octokit, owner, repo, filePath, pr.head.sha);
     if (content) {
@@ -143,7 +143,7 @@ export async function analyzeForApi(
   }
 
   // Compute score (excluding filtered findings)
-  // vibecheck-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  // vibescale-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
   const findingsForScore = validatedFindings
     ? staticFindings.filter((f) => {
         const validated = validatedFindings!.find(
@@ -160,11 +160,11 @@ export async function analyzeForApi(
   });
 
   // Count by severity (Array.filter, not database queries)
-  // vibecheck-ignore-next-line UNBOUNDED_QUERY
+  // vibescale-ignore-next-line UNBOUNDED_QUERY
   const high = findingsForScore.filter((f) => f.severity === "high").length;
-  // vibecheck-ignore-next-line UNBOUNDED_QUERY
+  // vibescale-ignore-next-line UNBOUNDED_QUERY
   const medium = findingsForScore.filter((f) => f.severity === "medium").length;
-  // vibecheck-ignore-next-line UNBOUNDED_QUERY
+  // vibescale-ignore-next-line UNBOUNDED_QUERY
   const low = findingsForScore.filter((f) => f.severity === "low").length;
 
   // Generate executive summary
@@ -173,7 +173,7 @@ export async function analyzeForApi(
     try {
       const summaryInput = prepareExecutiveSummaryInput(findingsForScore, vibeScoreResult.score, installationId);
       executiveSummary = await generateExecutiveSummary(summaryInput) ?? undefined;
-    // vibecheck-ignore-next-line SILENT_ERROR - Intentional: executive summary is optional, failure shouldn't block response
+    // vibescale-ignore-next-line SILENT_ERROR - Intentional: executive summary is optional, failure shouldn't block response
     } catch {
       // Executive summary is optional
     }

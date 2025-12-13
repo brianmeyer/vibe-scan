@@ -213,4 +213,4 @@ export const BASELINE_MAX_FILE_SIZE = 100 * 1024;
 export const BASELINE_MAX_FILES = 200;
 export const BASELINE_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 
-export const CONFIG_FILE_NAME = ".vibecheck.yml";
+export const CONFIG_FILE_NAME = ".vibescale.yml";

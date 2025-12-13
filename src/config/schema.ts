@@ -1,8 +1,8 @@
 /**
- * Configuration schema types for .vibecheck.yml files.
+ * Configuration schema types for .vibescale.yml files.
  *
  * This module defines the structure of the configuration file
- * that can be placed in repository roots to customize Vibe Check behavior.
+ * that can be placed in repository roots to customize Vibe Scale behavior.
  */
 
 import { RuleConfig, RuleId, RuleOverride } from "../analysis/rules";
@@ -109,13 +109,13 @@ export interface VibeScanReportingConfig {
 
   /**
    * Labels to add to created issues.
-   * Default: ["vibe-check", "production-risk"]
+   * Default: ["vibe-scale", "production-risk"]
    */
   issue_labels?: string[];
 }
 
 /**
- * Complete .vibecheck.yml configuration schema.
+ * Complete .vibescale.yml configuration schema.
  */
 export interface VibeScanConfig {
   /**
@@ -220,5 +220,5 @@ export const DEFAULT_REPORTING_CONFIG: RequiredReportingConfig = {
   create_issues: false,
   max_issues_per_pr: 3,
   issue_severity_threshold: "high",
-  issue_labels: ["vibe-check", "production-risk"],
+  issue_labels: ["vibe-scale", "production-risk"],
 };

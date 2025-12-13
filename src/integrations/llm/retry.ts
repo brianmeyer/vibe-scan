@@ -48,7 +48,7 @@ export async function withRetry<T>(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
-    // vibecheck-ignore-next-line SILENT_ERROR
+    // vibescale-ignore-next-line SILENT_ERROR
     } catch (error) {
       lastError = error;
 

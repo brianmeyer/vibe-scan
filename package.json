@@ -1,7 +1,7 @@
 {
-  "name": "vibe-check",
+  "name": "vibe-scale",
   "version": "1.0.0",
-  "description": "GitHub App that analyzes pull requests for production risks in AI-generated or prototype code (Vibe Check)",
+  "description": "GitHub App that analyzes pull requests for production risks in AI-generated or prototype code (Vibe Scale)",
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node src/index.ts",
@@ -11,7 +11,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/brianmeyer/vibe-check.git"
+    "url": "git+https://github.com/brianmeyer/vibe-scale.git"
   },
   "keywords": [
     "github-app",
@@ -28,9 +28,9 @@
     "node": ">=18.0.0"
   },
   "bugs": {
-    "url": "https://github.com/brianmeyer/vibe-check/issues"
+    "url": "https://github.com/brianmeyer/vibe-scale/issues"
   },
-  "homepage": "https://github.com/brianmeyer/vibe-check#readme",
+  "homepage": "https://github.com/brianmeyer/vibe-scale#readme",
   "devDependencies": {
     "@types/body-parser": "^1.19.6",
     "@types/express": "^5.0.6",

@@ -1,10 +1,10 @@
 /**
- * Inline suppression directive parsing for Vibe Check.
+ * Inline suppression directive parsing for Vibe Scale.
  *
  * Supports comment-based suppressions that work across languages:
- * - vibecheck-ignore-file ALL|RULE_ID[,RULE_ID...]
- * - vibecheck-ignore-line ALL|RULE_ID[,RULE_ID...]
- * - vibecheck-ignore-next-line ALL|RULE_ID[,RULE_ID...]
+ * - vibescale-ignore-file ALL|RULE_ID[,RULE_ID...]
+ * - vibescale-ignore-line ALL|RULE_ID[,RULE_ID...]
+ * - vibescale-ignore-next-line ALL|RULE_ID[,RULE_ID...]
  */
 
 import { RuleId, isValidRuleId } from "../analysis/rules";
@@ -58,7 +58,7 @@ export function parseSuppressionDirectives(source: string): SuppressionDirective
     const lineNumber = i + 1; // 1-based
 
     // Create fresh regex per line to avoid global state issues
-    const directiveRegex = /vibecheck-ignore-(file|line|next-line)\s+([A-Z0-9_,\s]+|ALL)/gi;
+    const directiveRegex = /vibescale-ignore-(file|line|next-line)\s+([A-Z0-9_,\s]+|ALL)/gi;
 
     let match: RegExpExecArray | null;
     while ((match = directiveRegex.exec(line)) !== null) {

@@ -1,11 +1,11 @@
-# Example workflow for running Vibe Check on pull requests
-# Copy this to your repository as .github/workflows/vibe-check.yml
+# Example workflow for running Vibe Scale on pull requests
+# Copy this to your repository as .github/workflows/vibe-scale.yml
 #
 # Prerequisites:
-# 1. Install the Vibe Check GitHub App on your repository
+# 1. Install the Vibe Scale GitHub App on your repository
 # 2. The app handles all API keys - no secrets needed!
 
-name: Vibe Check
+name: Vibe Scale
 
 on:
   pull_request:
@@ -16,12 +16,12 @@ permissions:
   pull-requests: read
 
 jobs:
-  vibe-check:
+  vibe-scale:
     name: Production Risk Analysis
     runs-on: ubuntu-latest
     steps:
-      - name: Run Vibe Check
-        uses: brianmeyer/vibe-check@main
+      - name: Run Vibe Scale
+        uses: brianmeyer/vibe-scale@main
         with:
           # Optionally fail the workflow if high-severity issues are found
           fail-on-high: 'false'

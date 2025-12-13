@@ -1,10 +1,10 @@
-name: 'Vibe Check'
-description: 'Analyze pull requests for vibe-coded production risks via hosted Vibe Check service'
-author: 'Vibe Check'
+name: 'Vibe Scale'
+description: 'Analyze pull requests for vibe-coded production risks via hosted Vibe Scale service'
+author: 'Vibe Scale'
 
 branding:
-  icon: 'shield'
-  color: 'purple'
+  icon: 'activity'
+  color: 'green'
 
 inputs:
   fail-on-high:
@@ -12,9 +12,9 @@ inputs:
     required: false
     default: 'false'
   api-url:
-    description: 'Vibe Check API URL (defaults to hosted service)'
+    description: 'Vibe Scale API URL (defaults to hosted service)'
     required: false
-    default: 'https://vibe-check-production.up.railway.app'
+    default: 'https://vibe-scale-production.up.railway.app'
 
 outputs:
   vibe-score:
@@ -30,7 +30,7 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Analyze PR with Vibe Check
+    - name: Analyze PR with Vibe Scale
       id: analyze
       shell: bash
       env:
@@ -49,7 +49,7 @@ runs:
 
         echo "Analyzing PR #${PR_NUMBER} in ${OWNER}/${REPO}..."
 
-        # Call Vibe Check API
+        # Call Vibe Scale API
         RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
           "${API_URL}/api/analyze" \
           -H "Content-Type: application/json" \
@@ -61,7 +61,7 @@ runs:
 
         if [ "$HTTP_CODE" != "200" ]; then
           ERROR=$(echo "$BODY" | jq -r '.error // "Unknown error"')
-          echo "::error::Vibe Check API error: ${ERROR}"
+          echo "::error::Vibe Scale API error: ${ERROR}"
           exit 1
         fi
 
@@ -81,7 +81,7 @@ runs:
         echo "high-count=${HIGH}" >> $GITHUB_OUTPUT
 
         # Write job summary
-        echo "## Vibe Check Results" >> $GITHUB_STEP_SUMMARY
+        echo "## Vibe Scale Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Vibe Score:** ${VIBE_SCORE}/100 (${VIBE_LABEL})" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -113,7 +113,7 @@ runs:
         fi
 
         echo "---" >> $GITHUB_STEP_SUMMARY
-        echo "_Powered by [Vibe Check](https://github.com/brianmeyer/vibe-check)_" >> $GITHUB_STEP_SUMMARY
+        echo "_Powered by [Vibe Scale](https://github.com/brianmeyer/vibe-scale)_" >> $GITHUB_STEP_SUMMARY
 
         # Fail if high-severity findings and fail-on-high is enabled
         if [ "$FAIL_ON_HIGH" = "true" ] && [ "$HIGH" -gt 0 ]; then
@@ -121,4 +121,4 @@ runs:
           exit 1
         fi
 
-        echo "Vibe Check complete: Score ${VIBE_SCORE}/100, ${TOTAL} findings (${HIGH} high, ${MEDIUM} medium, ${LOW} low)"
+        echo "Vibe Scale complete: Score ${VIBE_SCORE}/100, ${TOTAL} findings (${HIGH} high, ${MEDIUM} medium, ${LOW} low)"

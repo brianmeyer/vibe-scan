@@ -2,7 +2,7 @@
  * VIBE DISASTER TEST FILE
  *
  * This file intentionally contains every type of production risk pattern
- * that Vibe Check should detect. Use this to verify the scanner is working.
+ * that Vibe Scale should detect. Use this to verify the scanner is working.
  *
  * Expected findings:
  * - STATEFUL_SERVICE: in-memory cache (line ~15)

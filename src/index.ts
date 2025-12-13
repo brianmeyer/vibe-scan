@@ -20,9 +20,9 @@ const port = Number(config.PORT) || 3000;
 app.set("trust proxy", 1);
 
 // Track server state for graceful shutdown
-// vibecheck-ignore-next-line GLOBAL_MUTATION
+// vibescale-ignore-next-line GLOBAL_MUTATION
 let isShuttingDown = false;
-// vibecheck-ignore-next-line GLOBAL_MUTATION
+// vibescale-ignore-next-line GLOBAL_MUTATION
 let server: ReturnType<typeof app.listen> | null = null;
 
 // Request timeout (30 seconds for most, 120 for webhook processing)
@@ -133,7 +133,7 @@ app.get("/health", async (_req: Request, res: Response) => {
 app.get("/", (_req: Request, res: Response) => {
   res.status(200).json({
     status: "ok",
-    message: "Vibe Check backend is running",
+    message: "Vibe Scale backend is running",
     version: process.env.npm_package_version || "1.0.0",
   });
 });
@@ -266,7 +266,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Unhandled rejection handler (don't crash on unhandled promises)
-// vibecheck-ignore-next-line SILENT_ERROR
+// vibescale-ignore-next-line SILENT_ERROR
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled rejection", {
     error: reason instanceof Error ? reason.message : "unknown",

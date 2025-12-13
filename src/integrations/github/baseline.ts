@@ -78,7 +78,7 @@ export async function performBaselineScan(params: BaselineScanParams): Promise<v
     const filesToAnalyze = codeFiles.slice(0, BASELINE_MAX_FILES);
 
     // Fetch file contents with batching (intentional loop pattern for rate limiting)
-    // vibecheck-ignore-next-line LOOPED_IO
+    // vibescale-ignore-next-line LOOPED_IO
     const fileContents = new Map<string, string>();
     const batchSize = 10;
     let totalBytes = 0;
@@ -185,9 +185,9 @@ export async function performBaselineScan(params: BaselineScanParams): Promise<v
     await octokit.request("POST /repos/{owner}/{repo}/issues", {
       owner,
       repo: repoName,
-      title: `Vibe Check Baseline: Score ${vibeScoreResult.score}/100 (${vibeScoreResult.label})`,
+      title: `Vibe Scale Baseline: Score ${vibeScoreResult.score}/100 (${vibeScoreResult.label})`,
       body: issueBody,
-      labels: ["vibe-check", "baseline"],
+      labels: ["vibe-scale", "baseline"],
     });
 
     console.log(`[Baseline] Created baseline issue for ${repoFullName}`);
@@ -203,8 +203,8 @@ export async function performBaselineScan(params: BaselineScanParams): Promise<v
 export function buildBaselineIssueBody(params: BaselineIssueParams): string {
   const { vibeScore, vibeLabel, findings, validatedFindings, filteredCount = 0, filesAnalyzed, filesSkipped, truncated, totalCodeFiles } = params;
 
-  let body = `# Vibe Check Baseline Report\n\n`;
-  body += `Welcome to Vibe Check! This is your baseline production readiness assessment.\n\n`;
+  let body = `# Vibe Scale Baseline Report\n\n`;
+  body += `Welcome to Vibe Scale! This is your baseline production readiness assessment.\n\n`;
 
   // Score
   body += `## Vibe Score: **${vibeScore}/100** (${vibeLabel})\n\n`;
@@ -346,10 +346,10 @@ export function buildBaselineIssueBody(params: BaselineIssueParams): string {
   // Next steps
   body += `## Next Steps\n\n`;
   body += `1. Review the findings above and prioritize high-severity issues\n`;
-  body += `2. Configure Vibe Check by adding a \`.vibecheck.yml\` file\n`;
+  body += `2. Configure Vibe Scale by adding a \`.vibescale.yml\` file\n`;
   body += `3. PRs will be analyzed automatically\n\n`;
 
-  body += `---\n_Baseline scan from Vibe Check installation._\n`;
+  body += `---\n_Baseline scan from Vibe Scale installation._\n`;
 
   return body;
 }

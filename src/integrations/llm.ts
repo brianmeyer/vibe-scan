@@ -1,5 +1,5 @@
 /**
- * LLM integration module for Vibe Check.
+ * LLM integration module for Vibe Scale.
  *
  * This file re-exports from the modular llm/ directory for backwards compatibility.
  * New code should import from "./llm" or "./llm/specific-module".

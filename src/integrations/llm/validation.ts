@@ -186,7 +186,7 @@ export async function validateFindingsWithLlm(
       tokensUsed,
     };
   } catch (error) {
-    // vibecheck-ignore-next-line SILENT_ERROR - Intentional: LLM failure shouldn't block analysis
+    // vibescale-ignore-next-line SILENT_ERROR - Intentional: LLM failure shouldn't block analysis
     console.error("[LLM] Finding validation failed:", error instanceof Error ? error.message : "unknown");
     return null;
   }

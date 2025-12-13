@@ -32,7 +32,7 @@ export async function createIssuesForFindings(params: {
   // Filter findings by severity threshold
   const severityOrder = { high: 3, medium: 2, low: 1 };
   const thresholdValue = severityOrder[config.issue_severity_threshold];
-  // vibecheck-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
+  // vibescale-ignore-next-line UNBOUNDED_QUERY - Array.filter, not database query
   const eligibleFindings = findings.filter(
     (f) => severityOrder[f.severity] >= thresholdValue
   );
@@ -57,7 +57,7 @@ export async function createIssuesForFindings(params: {
       const moreLocations =
         group.locations.length > 5 ? `\n- _+${group.locations.length - 5} more locations_` : "";
 
-      const body = `## Vibe Check: ${group.kind}
+      const body = `## Vibe Scale: ${group.kind}
 
 **Severity:** ${group.severity.toUpperCase()}
 **PR:** #${prNumber} - ${prTitle}
@@ -73,12 +73,12 @@ ${locations}${moreLocations}
 Review and address these findings before merging to production.
 
 ---
-_This issue was automatically created by [Vibe Check](https://github.com/apps/vibe-check)._`;
+_This issue was automatically created by [Vibe Scale](https://github.com/apps/vibe-scale)._`;
 
       await octokit.request("POST /repos/{owner}/{repo}/issues", {
         owner,
         repo,
-        title: `[Vibe Check] ${group.kind}: ${group.count} finding(s) in PR #${prNumber}`,
+        title: `[Vibe Scale] ${group.kind}: ${group.count} finding(s) in PR #${prNumber}`,
         body,
         labels: config.issue_labels,
       });
@@ -86,7 +86,7 @@ _This issue was automatically created by [Vibe Check](https://github.com/apps/vi
       issuesCreated++;
       console.log(`[GitHub Issues] Created issue for ${group.kind}`);
     } catch (err) {
-      // vibecheck-ignore-next-line SILENT_ERROR - Intentional: continue creating other issues
+      // vibescale-ignore-next-line SILENT_ERROR - Intentional: continue creating other issues
       console.error(
         `[GitHub Issues] Failed to create issue for ${group.kind}:`,
         err instanceof Error ? err.message : "unknown"

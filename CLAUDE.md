@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/claude-code) when working 
 
 ## Project Overview
 
-Vibe Scan is a GitHub App that analyzes pull requests for "vibe-coded" (AI-generated/prototype) production risks. It combines **AST-based static analysis** with **LLM-powered review** to identify scaling issues, concurrency problems, missing error handling, and other patterns that commonly cause production failures.
+Vibe Scale is a GitHub App that analyzes pull requests for "vibe-coded" (AI-generated/prototype) production risks. It combines **AST-based static analysis** with **LLM-powered review** to identify scaling issues, concurrency problems, missing error handling, and other patterns that commonly cause production failures.
 
 ## Build & Development Commands
 
@@ -37,8 +37,8 @@ src/
 │   ├── scoring.ts         # Vibe Score computation
 │   └── structure.ts       # Code structure extraction for LLM context
 ├── config/                # Configuration system
-│   ├── schema.ts          # VibeScanConfig type definitions
-│   ├── loader.ts          # .vibescan.yml loader
+│   ├── schema.ts          # VibeScaleConfig type definitions
+│   ├── loader.ts          # .vibescale.yml loader
 │   └── suppression.ts     # Inline suppression directives
 └── integrations/          # External service integrations
     ├── github.ts          # GitHub webhook handlers, PR check runs
@@ -141,12 +141,12 @@ extractCompactStructure(content, language)
 ### Configuration (src/config/)
 
 **Schema** (src/config/schema.ts):
-- `VibeScanConfig` - Main config type
+- `VibeScaleConfig` - Main config type
 - `RuleConfig` - Per-rule configuration
 - `ScoringConfig` - Vibe Score settings
 
 **Loading** (src/config/loader.ts):
-- Loads `.vibescan.yml` from repo
+- Loads `.vibescale.yml` from repo
 - Falls back to default config
 - Supports path-specific overrides
 - Prototype zone support
@@ -155,9 +155,9 @@ extractCompactStructure(content, language)
 
 Three scopes (works in any language's comment syntax):
 ```
-vibescan-ignore-file ALL|RULE_ID[,RULE_ID...]
-vibescan-ignore-line ALL|RULE_ID[,RULE_ID...]
-vibescan-ignore-next-line ALL|RULE_ID[,RULE_ID...]
+vibescale-ignore-file ALL|RULE_ID[,RULE_ID...]
+vibescale-ignore-line ALL|RULE_ID[,RULE_ID...]
+vibescale-ignore-next-line ALL|RULE_ID[,RULE_ID...]
 ```
 
 ### Vibe Score (src/analysis/scoring.ts)
@@ -184,7 +184,7 @@ vibescan-ignore-next-line ALL|RULE_ID[,RULE_ID...]
 - `createInstallationOctokit(installationId)` - Auth for API calls
 - `fetchPullRequestFiles()` - Get PR diff patches
 - `fetchFileContent()` - Get full file content (50KB limit)
-- `fetchRepoConfig()` - Load .vibescan.yml
+- `fetchRepoConfig()` - Load .vibescale.yml
 
 **Check run results:**
 - Creates detailed check run with findings summary
@@ -237,7 +237,7 @@ Set by Railway automatically:
 
 ### Testing Config Loading
 
-- Fixtures in `tests/fixtures/vibescan-config/`
+- Fixtures in `tests/fixtures/vibescale-config/`
 - Test file: `tests/config.test.ts`
 
 ## Production Features

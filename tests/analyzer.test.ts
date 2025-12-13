@@ -114,10 +114,10 @@ describe("analyzePatch", () => {
   });
 
   describe("Inline suppression directives", () => {
-    it("should suppress finding with vibecheck-ignore-next-line", () => {
+    it("should suppress finding with vibescale-ignore-next-line", () => {
       const patch = `@@ -1,3 +1,5 @@
 +async function getData() {
-+  // vibecheck-ignore-next-line UNSAFE_IO
++  // vibescale-ignore-next-line UNSAFE_IO
 +  const response = await fetch('/api/data');
 +  return response.json();
 +}`;
